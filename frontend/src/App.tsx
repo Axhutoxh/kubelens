@@ -128,36 +128,48 @@ export const App: React.FC = () => {
 
   // Fetch all Resources for active cluster & namespace
   const loadResources = useCallback(async (silent = false) => {
+    if (currentView === 'smart-lens-studio') return;
     if (!silent) setIsRefreshing(true);
     try {
-      // Namespaces list
-      fetchK8sResource('namespaces').then((res) => {
-        setNamespaces(res.items?.map((ns: any) => ns.metadata.name) || []);
-      }).catch(() => {});
+      const promises: Promise<any>[] = [];
 
-      // Overview
-      fetchClusterOverview().then(setOverview).catch(() => {});
+      // Namespaces list (fetch once or on manual refresh)
+      if (!silent || namespaces.length === 0) {
+        promises.push(
+          fetchK8sResource('namespaces').then((res) => {
+            setNamespaces(res.items?.map((ns: any) => ns.metadata.name) || []);
+          }).catch(() => {})
+        );
+      }
+
+      // Overview only if overview view is active
+      if (currentView === 'overview') {
+        promises.push(fetchClusterOverview().then(setOverview).catch(() => {}));
+      }
 
       // View-specific data
       const ns = selectedNamespace;
 
-      const promises: Promise<any>[] = [
-        fetchK8sResource<PodItem>('pods', ns).then((res) => setPods(res.items || [])),
-        fetchK8sResource<NodeItem>('nodes').then((res) => setNodes(res.items || [])),
-        fetchK8sResource<EventItem>('events', ns).then((res) => setEvents(res.items || [])),
-      ];
-
+      if (currentView === 'pods' || currentView === 'overview') {
+        promises.push(fetchK8sResource<PodItem>('pods', ns).then((res) => setPods(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'nodes' || currentView === 'overview') {
+        promises.push(fetchK8sResource<NodeItem>('nodes').then((res) => setNodes(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'events' || currentView === 'overview') {
+        promises.push(fetchK8sResource<EventItem>('events', ns).then((res) => setEvents(res.items || [])).catch(() => {}));
+      }
       if (currentView === 'deployments' || currentView === 'overview') {
-        promises.push(fetchK8sResource<DeploymentItem>('deployments', ns).then((res) => setDeployments(res.items || [])));
+        promises.push(fetchK8sResource<DeploymentItem>('deployments', ns).then((res) => setDeployments(res.items || [])).catch(() => {}));
       }
       if (currentView === 'services' || currentView === 'overview') {
-        promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])));
+        promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])).catch(() => {}));
       }
       if (currentView === 'configmaps') {
-        promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])));
+        promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])).catch(() => {}));
       }
       if (currentView === 'secrets') {
-        promises.push(fetchK8sResource<SecretItem>('secrets', ns).then((res) => setSecrets(res.items || [])));
+        promises.push(fetchK8sResource<SecretItem>('secrets', ns).then((res) => setSecrets(res.items || [])).catch(() => {}));
       }
 
       await Promise.allSettled(promises);
@@ -166,19 +178,20 @@ export const App: React.FC = () => {
     } finally {
       setIsRefreshing(false);
     }
-  }, [currentView, selectedNamespace]);
+  }, [currentView, selectedNamespace, namespaces.length]);
 
   useEffect(() => {
     loadContexts();
   }, []);
 
   useEffect(() => {
+    if (currentView === 'smart-lens-studio') return;
     loadResources();
     const interval = setInterval(() => {
       loadResources(true);
     }, 10000);
     return () => clearInterval(interval);
-  }, [loadResources]);
+  }, [loadResources, currentView]);
 
   // Handle Switch Context
   const handleSwitchContext = async (newCtx: string) => {
