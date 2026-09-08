@@ -1,0 +1,504 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { TopBar } from './components/TopBar';
+import { Dock, DockTask } from './components/Dock';
+import { CreateResourceModal } from './components/CreateResourceModal';
+import { ScaleModal } from './components/ScaleModal';
+import { PodDetailModal } from './components/PodDetailModal';
+
+import { ClusterOverview } from './views/ClusterOverview';
+import { PodsView } from './views/PodsView';
+import { DeploymentsView } from './views/DeploymentsView';
+import { NodesView } from './views/NodesView';
+import { ServicesView } from './views/ServicesView';
+import { ConfigView } from './views/ConfigView';
+import { EventsView } from './views/EventsView';
+import { SmartLensStudio } from './views/SmartLensStudio';
+
+import { 
+  fetchContexts, 
+  switchContext, 
+  fetchClusterOverview, 
+  fetchK8sResource,
+  getResourceManifest,
+  deleteResource,
+  restartResource,
+  fetchPortForwards
+} from './api/client';
+
+import { 
+  ContextItem, 
+  ClusterOverviewData, 
+  PodItem, 
+  DeploymentItem, 
+  NodeItem, 
+  ServiceItem, 
+  EventItem,
+  ConfigMapItem,
+  SecretItem,
+  PortForwardSession
+} from './types/k8s';
+
+export const App: React.FC = () => {
+  // Navigation & Filter State
+  const [currentView, setCurrentView] = useState('overview');
+  const [contexts, setContexts] = useState<ContextItem[]>([]);
+  const [currentContext, setCurrentContext] = useState<string>('');
+  const [namespaces, setNamespaces] = useState<string[]>([]);
+  const [selectedNamespace, setSelectedNamespace] = useState<string>('_all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('freelens_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('freelens_sidebar_collapsed', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  // Cluster Resource State
+  const [overview, setOverview] = useState<ClusterOverviewData | null>(null);
+  const [pods, setPods] = useState<PodItem[]>([]);
+  const [deployments, setDeployments] = useState<DeploymentItem[]>([]);
+  const [nodes, setNodes] = useState<NodeItem[]>([]);
+  const [services, setServices] = useState<ServiceItem[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [configMaps, setConfigMaps] = useState<ConfigMapItem[]>([]);
+  const [secrets, setSecrets] = useState<SecretItem[]>([]);
+
+  // Dock & Multi-Task State
+  const [isDockOpen, setIsDockOpen] = useState(false);
+  const [dockTasks, setDockTasks] = useState<DockTask[]>([]);
+  const [activeDockTaskId, setActiveDockTaskId] = useState<string>('');
+
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [scaleTarget, setScaleTarget] = useState<{ kind: string; name: string; namespace: string; currentReplicas: number } | null>(null);
+
+  // Pod Details Modal & Active Port Forwards State
+  const [selectedPod, setSelectedPod] = useState<PodItem | null>(null);
+  const [selectedPodContext, setSelectedPodContext] = useState<string | undefined>(undefined);
+  const [selectedPodTab, setSelectedPodTab] = useState<'overview' | 'env' | 'containers' | 'portforward' | 'events' | 'yaml'>('overview');
+  const [portForwards, setPortForwards] = useState<PortForwardSession[]>([]);
+
+  // Notification Toast State
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const loadPortForwards = useCallback(async () => {
+    try {
+      const data = await fetchPortForwards();
+      setPortForwards(data.sessions || []);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPortForwards();
+    const timer = setInterval(loadPortForwards, 4000);
+    return () => clearInterval(timer);
+  }, [loadPortForwards]);
+
+  // Initial Load: Contexts & Overview
+  const loadContexts = async () => {
+    try {
+      const data = await fetchContexts();
+      setContexts(data.contexts || []);
+      setCurrentContext(data.currentContext || '');
+    } catch (err: any) {
+      console.error('Failed to load contexts', err);
+    }
+  };
+
+  // Fetch all Resources for active cluster & namespace
+  const loadResources = useCallback(async (silent = false) => {
+    if (!silent) setIsRefreshing(true);
+    try {
+      // Namespaces list
+      fetchK8sResource('namespaces').then((res) => {
+        setNamespaces(res.items?.map((ns: any) => ns.metadata.name) || []);
+      }).catch(() => {});
+
+      // Overview
+      fetchClusterOverview().then(setOverview).catch(() => {});
+
+      // View-specific data
+      const ns = selectedNamespace;
+
+      const promises: Promise<any>[] = [
+        fetchK8sResource<PodItem>('pods', ns).then((res) => setPods(res.items || [])),
+        fetchK8sResource<NodeItem>('nodes').then((res) => setNodes(res.items || [])),
+        fetchK8sResource<EventItem>('events', ns).then((res) => setEvents(res.items || [])),
+      ];
+
+      if (currentView === 'deployments' || currentView === 'overview') {
+        promises.push(fetchK8sResource<DeploymentItem>('deployments', ns).then((res) => setDeployments(res.items || [])));
+      }
+      if (currentView === 'services' || currentView === 'overview') {
+        promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])));
+      }
+      if (currentView === 'configmaps') {
+        promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])));
+      }
+      if (currentView === 'secrets') {
+        promises.push(fetchK8sResource<SecretItem>('secrets', ns).then((res) => setSecrets(res.items || [])));
+      }
+
+      await Promise.allSettled(promises);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [currentView, selectedNamespace]);
+
+  useEffect(() => {
+    loadContexts();
+  }, []);
+
+  useEffect(() => {
+    loadResources();
+    const interval = setInterval(() => {
+      loadResources(true);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [loadResources]);
+
+  // Handle Switch Context
+  const handleSwitchContext = async (newCtx: string) => {
+    try {
+      setIsRefreshing(true);
+      await switchContext(newCtx);
+      setCurrentContext(newCtx);
+      showToast(`Switched context to ${newCtx}`);
+      await loadResources();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // Open Log Stream Task
+  const handleOpenLogs = (pod: string, namespace: string, containers: string[], context?: string) => {
+    const taskId = `logs-${context || 'default'}-${namespace}-${pod}`;
+    const taskTitle = `Logs (${pod})${context ? ` [${context}]` : ''}`;
+    setDockTasks((prev) => {
+      const existing = prev.find((t) => t.id === taskId);
+      if (existing) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          id: taskId,
+          type: 'logs',
+          title: taskTitle,
+          pod,
+          namespace,
+          containers,
+          container: containers[0] || '',
+          context,
+        },
+      ];
+    });
+    setActiveDockTaskId(taskId);
+    setIsDockOpen(true);
+  };
+
+  // Open YAML Manifest Task
+  const handleOpenManifest = async (kind: string, name: string, namespace?: string, context?: string) => {
+    try {
+      const content = await getResourceManifest(kind, name, namespace, context);
+      const taskId = `manifest-${context || 'default'}-${kind}-${namespace || 'cluster'}-${name}`;
+      const taskTitle = `YAML ${kind}/${name}${context ? ` [${context}]` : ''}`;
+      setDockTasks((prev) => {
+        const existing = prev.find((t) => t.id === taskId);
+        if (existing) {
+          return prev.map((t) => (t.id === taskId ? { ...t, content } : t));
+        }
+        return [
+          ...prev,
+          {
+            id: taskId,
+            type: 'manifest',
+            title: taskTitle,
+            kind,
+            name,
+            namespace,
+            content,
+            context,
+          },
+        ];
+      });
+      setActiveDockTaskId(taskId);
+      setIsDockOpen(true);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // Close specific dock task / process individually
+  const handleCloseDockTask = (taskId: string) => {
+    setDockTasks((prev) => {
+      const filtered = prev.filter((t) => t.id !== taskId);
+      if (filtered.length === 0) {
+        setIsDockOpen(false);
+        setActiveDockTaskId('');
+      } else if (activeDockTaskId === taskId) {
+        setActiveDockTaskId(filtered[filtered.length - 1].id);
+      }
+      return filtered;
+    });
+  };
+
+  // Delete Resource
+  const handleDeleteResource = async (kind: string, name: string, namespace?: string) => {
+    if (!window.confirm(`Are you sure you want to delete ${kind} "${name}" in namespace "${namespace || 'default'}"?`)) {
+      return;
+    }
+    try {
+      await deleteResource(kind, name, namespace);
+      showToast(`Deleted ${kind} ${name}`);
+      loadResources();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // Restart Resource
+  const handleRestartResource = async (kind: string, name: string, namespace: string) => {
+    try {
+      await restartResource(kind, name, namespace);
+      showToast(`Triggered rollout restart for ${name}`);
+      loadResources();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg shadow-xl text-xs font-medium border transition-all animate-in fade-in slide-in-from-top-2 ${
+          toast.type === 'success' 
+            ? 'bg-emerald-950/90 border-emerald-800 text-emerald-300'
+            : 'bg-rose-950/90 border-rose-800 text-rose-300'
+        }`}>
+          {toast.message}
+        </div>
+      )}
+
+      {/* Main Sidebar */}
+      <Sidebar
+        currentView={currentView}
+        onSelectView={setCurrentView}
+        contexts={contexts}
+        currentContext={currentContext}
+        onSwitchContext={handleSwitchContext}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={toggleSidebar}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <TopBar
+          namespaces={namespaces}
+          selectedNamespace={selectedNamespace}
+          onSelectNamespace={setSelectedNamespace}
+          onToggleSidebar={toggleSidebar}
+          isSidebarCollapsed={isSidebarCollapsed}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onRefresh={() => {
+            loadResources();
+            loadPortForwards();
+          }}
+          isRefreshing={isRefreshing}
+          onOpenCreateModal={() => setIsCreateModalOpen(true)}
+          onToggleDock={() => setIsDockOpen(!isDockOpen)}
+          isDockOpen={isDockOpen}
+          portForwardsCount={portForwards.length}
+          onOpenPortForwards={() => setCurrentView('pods')}
+          onOpenSmartLensStudio={() => setCurrentView('smart-lens-studio')}
+          isSmartLensStudioActive={currentView === 'smart-lens-studio'}
+        />
+
+        {/* View Routing */}
+        <main className="flex-1 overflow-hidden relative bg-slate-950/60">
+          {currentView === 'overview' && (
+            <ClusterOverview
+              overview={overview}
+              pods={pods}
+              nodes={nodes}
+              events={events}
+              onNavigate={setCurrentView}
+            />
+          )}
+
+          {currentView === 'pods' && (
+            <PodsView
+              pods={pods}
+              searchQuery={searchQuery}
+              activePortForwards={portForwards}
+              onSelectPod={(pod) => {
+                setSelectedPod(pod);
+                setSelectedPodContext(undefined);
+                setSelectedPodTab('overview');
+              }}
+              onOpenLogs={handleOpenLogs}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'deployments' && (
+            <DeploymentsView
+              deployments={deployments}
+              searchQuery={searchQuery}
+              onScale={(dep) => setScaleTarget({
+                kind: 'deployment',
+                name: dep.metadata.name,
+                namespace: dep.metadata.namespace || 'default',
+                currentReplicas: dep.spec.replicas || 1,
+              })}
+              onRestart={handleRestartResource}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'nodes' && (
+            <NodesView
+              nodes={nodes}
+              searchQuery={searchQuery}
+              onOpenManifest={handleOpenManifest}
+            />
+          )}
+
+          {currentView === 'services' && (
+            <ServicesView
+              services={services}
+              searchQuery={searchQuery}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {(currentView === 'configmaps' || currentView === 'secrets') && (
+            <ConfigView
+              configMaps={configMaps}
+              secrets={secrets}
+              type={currentView as any}
+              searchQuery={searchQuery}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'events' && (
+            <EventsView
+              events={events}
+              searchQuery={searchQuery}
+            />
+          )}
+
+          {currentView === 'smart-lens-studio' && (
+            <SmartLensStudio
+              contexts={contexts}
+              currentContext={currentContext}
+              namespaces={namespaces}
+              currentNamespace={selectedNamespace}
+              activePortForwards={portForwards}
+              onSelectPod={(pod, ctx, initialTab) => {
+                setSelectedPod(pod);
+                setSelectedPodContext(ctx);
+                setSelectedPodTab(initialTab || 'overview');
+              }}
+              onOpenLogs={(pod, ns, containers, ctx) => handleOpenLogs(pod, ns, containers, ctx)}
+              onOpenManifest={(kind, name, ns, ctx) => handleOpenManifest(kind, name, ns, ctx)}
+              onToast={showToast}
+            />
+          )}
+
+          {currentView === 'namespaces' && (
+            <div className="p-6">
+              <h2 className="text-sm font-semibold mb-3">Cluster Namespaces</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {namespaces.map((ns) => (
+                  <div key={ns} className="bg-slate-900 border border-slate-800 p-3 rounded-lg text-xs font-mono text-cyan-300">
+                    {ns}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </main>
+
+        {/* Bottom Dock (Multi-Task: Logs & YAML Editor with per-task close button) */}
+        <Dock
+          isOpen={isDockOpen}
+          onClose={() => setIsDockOpen(false)}
+          tasks={dockTasks}
+          activeTaskId={activeDockTaskId}
+          onSelectTask={setActiveDockTaskId}
+          onCloseTask={handleCloseDockTask}
+        />
+      </div>
+
+      {/* Modals */}
+      <CreateResourceModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onSuccess={() => loadResources()}
+        defaultNamespace={selectedNamespace !== '_all' ? selectedNamespace : 'default'}
+      />
+
+      <ScaleModal
+        isOpen={!!scaleTarget}
+        onClose={() => setScaleTarget(null)}
+        onSuccess={() => loadResources()}
+        target={scaleTarget}
+      />
+
+      {/* Pod Detail & Port Forward Modal */}
+      {selectedPod && (
+        <PodDetailModal
+          isOpen={!!selectedPod}
+          pod={selectedPod}
+          context={selectedPodContext}
+          initialTab={selectedPodTab}
+          onClose={() => {
+            setSelectedPod(null);
+            setSelectedPodContext(undefined);
+            setSelectedPodTab('overview');
+          }}
+          onOpenLogs={(pod, ns, containers) => handleOpenLogs(pod, ns, containers, selectedPodContext)}
+          onOpenManifest={(kind, name, ns) => handleOpenManifest(kind, name, ns, selectedPodContext)}
+          onRefreshList={() => {
+            loadResources();
+            loadPortForwards();
+          }}
+          onToast={showToast}
+        />
+      )}
+    </div>
+  );
+};
