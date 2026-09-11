@@ -354,6 +354,13 @@ export const App: React.FC = () => {
           isSmartLensStudioActive={currentView === 'smart-lens-studio'}
         />
 
+        {/* Global Loading Progress Bar */}
+        {isRefreshing && (
+          <div className="h-0.5 w-full bg-cyan-950 overflow-hidden shrink-0">
+            <div className="h-full bg-gradient-to-r from-cyan-500 via-indigo-400 to-cyan-400 animate-[pulse_1s_infinite] w-full" />
+          </div>
+        )}
+
         {/* View Routing */}
         <main className="flex-1 overflow-hidden relative bg-slate-950/60">
           {currentView === 'overview' && (
@@ -421,8 +428,11 @@ export const App: React.FC = () => {
               secrets={secrets}
               type={currentView as any}
               searchQuery={searchQuery}
+              currentContext={currentContext}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+              onRefresh={loadResources}
+              onToast={showToast}
             />
           )}
 
@@ -474,6 +484,32 @@ export const App: React.FC = () => {
           onSelectTask={setActiveDockTaskId}
           onCloseTask={handleCloseDockTask}
         />
+
+        {/* Bottom Status Bar */}
+        <footer className="h-6 bg-slate-950 border-t border-slate-800/80 px-3 flex items-center justify-between text-[11px] text-slate-400 select-none shrink-0 z-10">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Connected: {currentContext || 'Detecting...'}</span>
+            </span>
+            {selectedNamespace !== '_all' && (
+              <span className="text-slate-500">• Namespace: <span className="text-slate-300 font-mono">{selectedNamespace}</span></span>
+            )}
+            {isRefreshing && (
+              <span className="flex items-center gap-1 text-cyan-400 text-[10px] animate-pulse">
+                <span className="w-1 h-1 rounded-full bg-cyan-400" />
+                <span>Syncing cluster...</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="text-slate-500 font-mono text-[10px]">lensbyacp</span>
+            <span className="text-slate-700">•</span>
+            <span className="text-cyan-400 font-semibold flex items-center gap-1">
+              <span>developed by Ashutosh</span>
+            </span>
+          </div>
+        </footer>
       </div>
 
       {/* Modals */}

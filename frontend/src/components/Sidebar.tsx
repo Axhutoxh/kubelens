@@ -177,16 +177,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Footer Info */}
-      <div className="p-3 border-t border-slate-800 text-[11px] text-slate-400 flex items-center justify-between bg-slate-950/30">
+      <div className="p-3 border-t border-slate-800 text-[11px] text-slate-400 bg-slate-950/40">
         {!isCollapsed ? (
-          <>
-            <span className="font-mono text-cyan-400/90 font-medium">⚡ Freelens Fast</span>
-            <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
-              v2.0 Native
-            </span>
-          </>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-cyan-400/90 font-bold tracking-tight">⚡ lensbyacp</span>
+              <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
+                v1.0 Native
+              </span>
+            </div>
+            <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">
+              by <span className="text-slate-400 font-semibold">Ashutosh Chandra</span>
+            </div>
+          </div>
         ) : (
-          <span className="mx-auto font-mono text-cyan-400 font-bold" title="Freelens Fast v2.0">
+          <span className="block text-center font-mono text-cyan-400 font-bold" title="lensbyacp • Developed by Ashutosh Chandra">
             ⚡
           </span>
         )}

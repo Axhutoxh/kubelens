@@ -6,7 +6,8 @@ import {
   FileCode, 
   Trash2, 
   CheckCircle2, 
-  AlertCircle 
+  AlertCircle,
+  Tag
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
 
@@ -17,6 +18,36 @@ interface DeploymentsViewProps {
   onRestart: (kind: string, name: string, namespace: string) => void;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+}
+
+export function parseImage(imageStr?: string) {
+  if (!imageStr) return { fullName: '', name: 'unknown', tag: 'latest' };
+
+  const fullName = imageStr.trim();
+
+  // Digest format: image@sha256:...
+  if (fullName.includes('@')) {
+    const [repoPart, digestPart] = fullName.split('@');
+    const name = repoPart.split('/').pop() || repoPart;
+    const shortDigest = digestPart.startsWith('sha256:')
+      ? digestPart.slice(0, 15) + '…'
+      : digestPart.slice(0, 12);
+    return { fullName, name, tag: shortDigest };
+  }
+
+  // Handle image:tag (watch out for host:port/path/image:tag)
+  const lastColon = fullName.lastIndexOf(':');
+  const lastSlash = fullName.lastIndexOf('/');
+
+  if (lastColon > lastSlash) {
+    const repoPart = fullName.slice(0, lastColon);
+    const tag = fullName.slice(lastColon + 1);
+    const name = repoPart.split('/').pop() || repoPart;
+    return { fullName, name, tag: tag || 'latest' };
+  }
+
+  const name = fullName.split('/').pop() || fullName;
+  return { fullName, name, tag: 'latest' };
 }
 
 export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
@@ -31,7 +62,20 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
     const name = d.metadata.name.toLowerCase();
     const ns = (d.metadata.namespace || '').toLowerCase();
     const q = searchQuery.toLowerCase();
-    return name.includes(q) || ns.includes(q);
+
+    // Match image and tag name
+    const containers = d.spec?.template?.spec?.containers || [];
+    const matchesImage = containers.some((c) => {
+      const img = (c.image || '').toLowerCase();
+      const parsed = parseImage(c.image);
+      return (
+        img.includes(q) ||
+        parsed.tag.toLowerCase().includes(q) ||
+        parsed.name.toLowerCase().includes(q)
+      );
+    });
+
+    return name.includes(q) || ns.includes(q) || matchesImage;
   });
 
   return (
@@ -45,6 +89,10 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
             {filteredDeployments.length} of {deployments.length}
           </span>
         </div>
+        <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+          Displays container images & active image tag versions
+        </span>
       </div>
 
       {/* Table */}
@@ -54,6 +102,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
             <tr>
               <th className="py-2.5 px-4 font-semibold">Name</th>
               <th className="py-2.5 px-4 font-semibold">Namespace</th>
+              <th className="py-2.5 px-4 font-semibold">Images & Tags</th>
               <th className="py-2.5 px-4 font-semibold">Pods (Ready / Desired)</th>
               <th className="py-2.5 px-4 font-semibold">Up-to-date</th>
               <th className="py-2.5 px-4 font-semibold">Available</th>
@@ -63,7 +112,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredDeployments.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={7} className="py-12 text-center text-slate-500 italic">
                   No deployments found.
                 </td>
               </tr>
@@ -74,6 +123,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                 const updated = dep.status.updatedReplicas ?? 0;
                 const available = dep.status.availableReplicas ?? 0;
                 const isHealthy = ready === desired && desired > 0;
+                const containers = dep.spec?.template?.spec?.containers || [];
 
                 return (
                   <tr key={dep.metadata.uid || dep.metadata.name} className="hover:bg-slate-800/40 transition-colors">
@@ -84,6 +134,41 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                       <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
                         {dep.metadata.namespace}
                       </span>
+                    </td>
+                    {/* Images & Tags Column */}
+                    <td className="py-2.5 px-4">
+                      {containers.length === 0 ? (
+                        <span className="text-slate-500 italic text-[11px]">No containers</span>
+                      ) : (
+                        <div className="space-y-1 max-w-sm py-0.5">
+                          {containers.map((c, idx) => {
+                            const { fullName, name: imgName, tag } = parseImage(c.image);
+                            return (
+                              <div 
+                                key={idx} 
+                                className="flex items-center gap-1.5 text-[11px] leading-tight" 
+                                title={`Container: ${c.name || 'default'} | Full Image: ${fullName}`}
+                              >
+                                {containers.length > 1 && (
+                                  <span className="text-slate-400 text-[10px] font-mono shrink-0">
+                                    {c.name}:
+                                  </span>
+                                )}
+                                <span className="text-slate-200 truncate font-mono font-medium max-w-[130px]" title={fullName}>
+                                  {imgName}
+                                </span>
+                                <span 
+                                  className="bg-indigo-950/90 text-indigo-300 border border-indigo-700/70 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold shrink-0 flex items-center gap-0.5 shadow-sm"
+                                  title={`Tag: ${tag}`}
+                                >
+                                  <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                                  <span className="truncate max-w-[120px]">{tag}</span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </td>
                     <td className="py-2.5 px-4">
                       <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${

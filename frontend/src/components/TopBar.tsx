@@ -99,15 +99,23 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         </div>
 
-        {/* Refresh Button */}
-        <button
-          onClick={onRefresh}
-          disabled={isRefreshing}
-          title="Refresh Resources"
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-md border border-slate-800 transition-colors disabled:opacity-50"
-        >
-          <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-cyan-400' : ''}`} />
-        </button>
+        {/* Refresh Button & Loader */}
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            title="Refresh Resources"
+            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-md border border-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-cyan-400' : ''}`} />
+          </button>
+          {isRefreshing && (
+            <span className="flex items-center gap-1 text-[11px] text-cyan-300 bg-cyan-950/80 border border-cyan-800/60 px-2 py-0.5 rounded-full font-medium animate-pulse shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              <span>Loading...</span>
+            </span>
+          )}
+        </div>
 
         {/* Smart Lens Studio Button */}
         {onOpenSmartLensStudio && (

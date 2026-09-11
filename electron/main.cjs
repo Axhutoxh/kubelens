@@ -10,12 +10,22 @@ let targetUrl = 'http://localhost:9090';
 
 // Find the backend executable path
 function findBackendExe() {
+  const isWin = process.platform === 'win32';
+  const binName = isWin ? 'freelens-rust.exe' : 'freelens-rust';
   const rootDir = path.resolve(__dirname, '..');
+
   const candidates = [
-    path.join(rootDir, 'freelens-rust.exe'),
-    path.join(rootDir, 'target', 'release', 'freelens-rust.exe'),
-    path.join(rootDir, 'target', 'debug', 'freelens-rust.exe'),
-  ];
+    // 1. Packaged extraResources
+    process.resourcesPath && path.join(process.resourcesPath, binName),
+    process.resourcesPath && path.join(process.resourcesPath, 'bin', binName),
+    process.resourcesPath && path.join(process.resourcesPath, 'app.asar.unpacked', binName),
+    // 2. Project root / local development
+    path.join(rootDir, binName),
+    path.join(rootDir, 'target', 'release', binName),
+    path.join(rootDir, 'target', 'debug', binName),
+    path.join(__dirname, '..', '..', binName),
+    path.join(__dirname, binName),
+  ].filter(Boolean);
 
   for (const p of candidates) {
     if (fs.existsSync(p)) {
@@ -62,19 +72,49 @@ async function startBackend() {
 
   const exePath = findBackendExe();
   if (!exePath) {
-    console.warn('[Electron] freelens-rust.exe not found. Proceeding assuming server will be started manually.');
+    console.warn('[Electron] freelens-rust backend executable not found. Proceeding assuming server will be started manually.');
     return;
   }
 
   console.log(`[Electron] Starting backend process: ${exePath}`);
   const rootDir = path.resolve(__dirname, '..');
+  const workingDir = app.isPackaged ? path.dirname(exePath) : rootDir;
+
+  const staticDirCandidates = [
+    process.resourcesPath && path.join(process.resourcesPath, 'dist'),
+    process.resourcesPath && path.join(process.resourcesPath, 'frontend', 'dist'),
+    path.join(rootDir, 'dist'),
+    path.join(rootDir, 'frontend', 'dist'),
+    path.resolve(__dirname, '..', 'dist'),
+    path.resolve(__dirname, '..', '..', 'dist'),
+    path.resolve(__dirname, '..', '..', 'frontend', 'dist'),
+  ].filter(Boolean);
+
+  let staticDir = '';
+  for (const d of staticDirCandidates) {
+    if (fs.existsSync(path.join(d, 'index.html'))) {
+      staticDir = d;
+      break;
+    }
+  }
+  if (!staticDir) {
+    for (const d of staticDirCandidates) {
+      if (fs.existsSync(d)) {
+        staticDir = d;
+        break;
+      }
+    }
+  }
+
+  console.log(`[Electron] Using frontend static directory: ${staticDir || '(auto-detect)'}`);
 
   backendProcess = spawn(exePath, [], {
-    cwd: rootDir,
+    cwd: workingDir,
     env: {
       ...process.env,
       FREELENS_NO_BROWSER: '1',
       FREELENS_ELECTRON: '1',
+      FREELENS_STATIC_DIR: staticDir,
       PORT: '9090',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -130,7 +170,7 @@ function createMainWindow() {
     minWidth: 1024,
     minHeight: 640,
     backgroundColor: '#020617', // Slate-950 dark theme
-    title: 'Freelens - Kubernetes IDE',
+    title: 'lensbyacp - Kubernetes IDE',
     autoHideMenuBar: true,
     show: false, // will show when content is ready
     webPreferences: {
@@ -148,6 +188,27 @@ function createMainWindow() {
       shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[Renderer LOG ${level}] ${message} (${sourceId}:${line})`);
+  });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[Renderer FAILED LOAD] code=${errorCode} error=${errorDescription} url=${validatedURL}`);
+    // Auto-retry if backend was still binding
+    if (validatedURL && validatedURL.includes('localhost') && errorCode !== -3) {
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const devUrl = process.env.VITE_DEV_SERVER_URL;
+          mainWindow.loadURL(devUrl || targetUrl);
+        }
+      }, 1000);
+    }
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log(`[Renderer FINISHED LOAD] current URL=${mainWindow.webContents.getURL()}`);
   });
 
   // Display initial dark loading state while backend spins up
@@ -170,9 +231,9 @@ function createMainWindow() {
           user-select: none;
         }
         .spinner {
-          width: 32px;
-          height: 32px;
-          border: 3px solid rgba(6, 182, 212, 0.2);
+          width: 36px;
+          height: 36px;
+          border: 3px solid rgba(6, 182, 212, 0.15);
           border-top-color: #06b6d4;
           border-radius: 50%;
           animation: spin 0.8s linear infinite;
@@ -188,23 +249,30 @@ function createMainWindow() {
           align-items: center;
         }
         .title {
-          font-size: 16px;
-          font-weight: 600;
+          font-size: 18px;
+          font-weight: 700;
           letter-spacing: -0.01em;
-          color: #e2e8f0;
+          color: #f1f5f9;
         }
         .sub {
           font-size: 12px;
-          color: #64748b;
+          color: #38bdf8;
           margin-top: 4px;
+        }
+        .author {
+          font-size: 11px;
+          color: #64748b;
+          margin-top: 8px;
+          font-weight: 500;
         }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="spinner"></div>
-        <div class="title">Freelens Kubernetes IDE</div>
-        <div class="sub">Initializing cluster engine...</div>
+        <div class="title">lensbyacp</div>
+        <div class="sub">Initializing Kubernetes cluster engine...</div>
+        <div class="author">Developed by Ashutosh Chandra</div>
       </div>
     </body>
     </html>

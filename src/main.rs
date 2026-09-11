@@ -19,6 +19,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::Arc,
+    time::Instant,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -26,9 +27,67 @@ use tokio::{
     sync::RwLock,
 };
 use tower_http::{
+    compression::CompressionLayer,
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
 };
+
+#[derive(Clone)]
+struct CachedEntry {
+    payload: Arc<String>,
+    expires_at: Instant,
+}
+
+#[derive(Clone)]
+struct ResourceCache {
+    entries: Arc<RwLock<HashMap<String, CachedEntry>>>,
+}
+
+impl ResourceCache {
+    fn new() -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn get(&self, key: &str) -> Option<Arc<String>> {
+        let now = Instant::now();
+        let map = self.entries.read().await;
+        if let Some(entry) = map.get(key) {
+            if entry.expires_at > now {
+                return Some(entry.payload.clone());
+            }
+        }
+        None
+    }
+
+    async fn set(&self, key: String, payload: String, ttl_secs: u64) -> Arc<String> {
+        let now = Instant::now();
+        let shared = Arc::new(payload);
+        let mut map = self.entries.write().await;
+        if map.len() > 150 {
+            map.retain(|_, v| v.expires_at > now);
+        }
+        map.insert(
+            key,
+            CachedEntry {
+                payload: shared.clone(),
+                expires_at: now + std::time::Duration::from_secs(ttl_secs),
+            },
+        );
+        shared
+    }
+
+    async fn invalidate_prefix(&self, prefix: &str) {
+        let mut map = self.entries.write().await;
+        map.retain(|k, _| !k.starts_with(prefix));
+    }
+
+    async fn invalidate_all(&self) {
+        let mut map = self.entries.write().await;
+        map.clear();
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct PortForwardSession {
@@ -54,6 +113,7 @@ struct ActivePortForward {
 struct AppState {
     current_context: Arc<RwLock<String>>,
     port_forwards: Arc<RwLock<HashMap<String, ActivePortForward>>>,
+    cache: ResourceCache,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -251,6 +311,16 @@ async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, Str
 async fn handle_contexts(State(state): State<AppState>) -> impl IntoResponse {
     let current_ctx = state.current_context.read().await.clone();
 
+    if let Some(cached) = state.cache.get("contexts").await {
+        if let Ok(mut resp) = serde_json::from_str::<ContextResponse>(&cached) {
+            resp.current_context = current_ctx.clone();
+            for c in &mut resp.contexts {
+                c.is_active = c.name == current_ctx;
+            }
+            return Json(resp);
+        }
+    }
+
     let output = create_kubectl_cmd()
         .args(["config", "get-contexts", "-o", "name"])
         .output()
@@ -270,10 +340,16 @@ async fn handle_contexts(State(state): State<AppState>) -> impl IntoResponse {
         }
     }
 
-    Json(ContextResponse {
+    let resp = ContextResponse {
         current_context: current_ctx,
         contexts,
-    })
+    };
+
+    if let Ok(json_str) = serde_json::to_string(&resp) {
+        state.cache.set("contexts".to_string(), json_str, 5).await;
+    }
+
+    Json(resp)
 }
 
 async fn handle_switch_context(
@@ -295,6 +371,7 @@ async fn handle_switch_context(
 
     let mut lock = state.current_context.write().await;
     *lock = payload.context.clone();
+    state.cache.invalidate_all().await;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -308,31 +385,41 @@ async fn handle_cluster_overview(
 ) -> impl IntoResponse {
     let current_ctx = state.current_context.read().await.clone();
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let cache_key = format!("overview:{}", ctx_to_use);
 
-    let nodes_raw = run_kubectl_cmd(&["get", "nodes", "-o", "json"], ctx_to_use)
-        .await
-        .unwrap_or_else(|_| "{}".to_string());
-    let pods_raw = run_kubectl_cmd(&["get", "pods", "-A", "-o", "json"], ctx_to_use)
-        .await
-        .unwrap_or_else(|_| "{}".to_string());
-    let ns_raw = run_kubectl_cmd(&["get", "namespaces", "-o", "json"], ctx_to_use)
-        .await
-        .unwrap_or_else(|_| "{}".to_string());
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            (*cached).clone(),
+        )
+            .into_response();
+    }
 
-    let nodes_json: serde_json::Value = serde_json::from_str(&nodes_raw).unwrap_or_default();
-    let pods_json: serde_json::Value = serde_json::from_str(&pods_raw).unwrap_or_default();
-    let ns_json: serde_json::Value = serde_json::from_str(&ns_raw).unwrap_or_default();
+    // Run parallel async queries using tokio::join! with lightweight jsonpath
+    let (nodes_res, pods_res, ns_res) = tokio::join!(
+        run_kubectl_cmd(&["get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"], ctx_to_use),
+        run_kubectl_cmd(&["get", "pods", "-A", "-o", "jsonpath={.items[*].metadata.name}"], ctx_to_use),
+        run_kubectl_cmd(&["get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"], ctx_to_use),
+    );
 
-    let nodes_count = nodes_json["items"].as_array().map_or(0, |a| a.len());
-    let pods_count = pods_json["items"].as_array().map_or(0, |a| a.len());
-    let ns_count = ns_json["items"].as_array().map_or(0, |a| a.len());
+    let nodes_count = nodes_res.ok().map(|s| s.split_whitespace().count()).unwrap_or(0);
+    let pods_count = pods_res.ok().map(|s| s.split_whitespace().count()).unwrap_or(0);
+    let ns_count = ns_res.ok().map(|s| s.split_whitespace().count()).unwrap_or(0);
 
-    Json(serde_json::json!({
+    let payload = serde_json::json!({
         "context": ctx_to_use,
         "nodesCount": nodes_count,
         "podsCount": pods_count,
         "namespacesCount": ns_count
-    }))
+    }).to_string();
+
+    state.cache.set(cache_key, payload.clone(), 4).await;
+
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        payload,
+    )
+        .into_response()
 }
 
 async fn handle_k8s_resource(
@@ -342,6 +429,16 @@ async fn handle_k8s_resource(
 ) -> Result<Response, (StatusCode, String)> {
     let current_ctx = state.current_context.read().await.clone();
     let ctx_to_use = query.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let cache_key = format!("k8s:{}:{}:{}", ctx_to_use, kind, query.namespace.as_deref().unwrap_or("_all"));
+
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        return Ok((
+            [(header::CONTENT_TYPE, "application/json")],
+            (*cached).clone(),
+        )
+            .into_response());
+    }
+
     let mut args = vec!["get", &kind, "-o", "json"];
 
     let ns_val;
@@ -360,6 +457,8 @@ async fn handle_k8s_resource(
     let out = run_kubectl_cmd(&args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    state.cache.set(cache_key, out.clone(), 3).await;
 
     Ok((
         [(header::CONTENT_TYPE, "application/json")],
@@ -426,6 +525,7 @@ async fn handle_apply_manifest(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if output.status.success() {
+        state.cache.invalidate_all().await;
         Ok(Json(serde_json::json!({
             "success": true,
             "output": String::from_utf8_lossy(&output.stdout).to_string()
@@ -457,6 +557,10 @@ async fn handle_delete_resource(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    state.cache.invalidate_prefix(&format!("k8s:{}:{}", ctx_to_use, req.kind)).await;
+    state.cache.invalidate_prefix(&format!("overview:{}", ctx_to_use)).await;
+    state.cache.invalidate_prefix(&format!("detail:{}:{}", ctx_to_use, req.kind)).await;
+
     Ok(Json(serde_json::json!({
         "success": true,
         "output": out
@@ -477,6 +581,8 @@ async fn handle_scale_resource(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    state.cache.invalidate_prefix(&format!("k8s:{}:{}", ctx_to_use, req.kind)).await;
+
     Ok(Json(serde_json::json!({
         "success": true,
         "output": out
@@ -495,6 +601,9 @@ async fn handle_restart_resource(
     let out = run_kubectl_cmd(&args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    state.cache.invalidate_prefix(&format!("k8s:{}:{}", ctx_to_use, req.kind)).await;
+    state.cache.invalidate_prefix(&format!("k8s:{}:pods", ctx_to_use)).await;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -561,21 +670,21 @@ fn current_time_str() -> String {
     format!("{:02}:{:02}:{:02} UTC", hours, mins, secs)
 }
 
-fn find_free_port(start: u16) -> Option<u16> {
-    for port in start..65535 {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Some(port);
-        }
-    }
-    None
-}
-
 async fn handle_resource_detail(
     Query(q): Query<ResourceDetailQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
     let current_ctx = state.current_context.read().await.clone();
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let cache_key = format!("detail:{}:{}:{}:{}", ctx_to_use, q.kind, q.namespace.as_deref().unwrap_or(""), q.name);
+
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        return Ok((
+            [(header::CONTENT_TYPE, "application/json")],
+            (*cached).clone(),
+        ).into_response());
+    }
+
     let mut args = vec!["get", &q.kind, &q.name, "-o", "json"];
 
     let ns_val;
@@ -591,6 +700,8 @@ async fn handle_resource_detail(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    state.cache.set(cache_key, out.clone(), 5).await;
+
     Ok((
         [(header::CONTENT_TYPE, "application/json")],
         out,
@@ -603,6 +714,15 @@ async fn handle_pod_events(
 ) -> Result<Response, (StatusCode, String)> {
     let current_ctx = state.current_context.read().await.clone();
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let cache_key = format!("events:{}:{}:{}", ctx_to_use, q.namespace, q.name);
+
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        return Ok((
+            [(header::CONTENT_TYPE, "application/json")],
+            (*cached).clone(),
+        ).into_response());
+    }
+
     let field_selector = format!("involvedObject.name={}", q.name);
     let args = [
         "get",
@@ -618,6 +738,8 @@ async fn handle_pod_events(
     let out = run_kubectl_cmd(&args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    state.cache.set(cache_key, out.clone(), 3).await;
 
     Ok((
         [(header::CONTENT_TYPE, "application/json")],
@@ -698,6 +820,11 @@ async fn handle_set_env(
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("kubectl set env failed: {}", e)))?;
 
+        state.cache.invalidate_prefix(&format!("k8s:{}:pods", ctx_to_use)).await;
+        state.cache.invalidate_prefix(&format!("k8s:{}:deployment", ctx_to_use)).await;
+        state.cache.invalidate_prefix(&format!("k8s:{}:replicaset", ctx_to_use)).await;
+        state.cache.invalidate_prefix(&format!("detail:{}", ctx_to_use)).await;
+
         return Ok(Json(serde_json::json!({
             "success": true,
             "target": target_arg,
@@ -768,6 +895,8 @@ async fn handle_set_env(
     }
     let output = child.wait_with_output().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if output.status.success() {
+        state.cache.invalidate_prefix(&format!("k8s:{}:pods", ctx_to_use)).await;
+        state.cache.invalidate_prefix(&format!("detail:{}", ctx_to_use)).await;
         Ok(Json(serde_json::json!({
             "success": true,
             "target": format!("pod/{}", req.pod),
@@ -915,38 +1044,61 @@ async fn handle_list_port_forwards(State(state): State<AppState>) -> impl IntoRe
 }
 
 fn find_frontend_dir() -> PathBuf {
-    // 1. Current working directory
-    let p1 = PathBuf::from("frontend/dist");
-    if p1.exists() {
-        return p1;
+    // 0. Explicit environment variable (from Electron or packaging)
+    if let Ok(dir) = std::env::var("FREELENS_STATIC_DIR") {
+        let p = PathBuf::from(&dir);
+        if p.exists() && p.join("index.html").exists() {
+            return p;
+        }
+        if p.exists() {
+            return p;
+        }
     }
 
-    // 2. Relative to the executable
+    // 1. Current working directory
+    let cwd_candidates = [
+        PathBuf::from("frontend/dist"),
+        PathBuf::from("dist"),
+        PathBuf::from("../frontend/dist"),
+        PathBuf::from("../dist"),
+    ];
+    for c in &cwd_candidates {
+        if c.exists() && c.join("index.html").exists() {
+            return c.clone();
+        }
+    }
+
+    // 2. Relative to the executable (Handles packaged Electron app: resources/bin/freelens-rust.exe)
     if let Ok(mut exe) = std::env::current_exe() {
-        exe.pop(); // remove executable file name
-        let p2 = exe.join("frontend").join("dist");
-        if p2.exists() {
-            return p2;
+        exe.pop(); // remove executable file name (e.g. resources/bin or target/release)
+        
+        let exe_candidates = [
+            exe.join("..").join("dist"),              // resources/dist (packaged Electron app)
+            exe.join("dist"),                         // exe_dir/dist
+            exe.join("frontend").join("dist"),        // exe_dir/frontend/dist
+            exe.join("..").join("frontend").join("dist"), // exe_dir/../frontend/dist
+            exe.join("..").join("..").join("frontend").join("dist"), // target/release -> freelens-rust/frontend/dist
+            exe.join("..").join("..").join("dist"),
+        ];
+
+        for c in &exe_candidates {
+            if c.exists() && c.join("index.html").exists() {
+                return c.clone();
+            }
         }
-        let p3 = exe.join("dist");
-        if p3.exists() {
-            return p3;
-        }
-        // If running from target/debug or target/release
-        if exe.ends_with("debug") || exe.ends_with("release") {
-            exe.pop(); // target
-            exe.pop(); // freelens-rust root
-            let p4 = exe.join("frontend").join("dist");
-            if p4.exists() {
-                return p4;
+
+        // Check if any candidate exists even without index.html
+        for c in &exe_candidates {
+            if c.exists() {
+                return c.clone();
             }
         }
     }
 
-    // 3. One folder up
-    let p5 = PathBuf::from("../frontend/dist");
-    if p5.exists() {
-        return p5;
+    for c in &cwd_candidates {
+        if c.exists() {
+            return c.clone();
+        }
     }
 
     PathBuf::from("frontend/dist")
@@ -958,6 +1110,7 @@ async fn main() {
     let state = AppState {
         current_context: Arc::new(RwLock::new(initial_context.clone())),
         port_forwards: Arc::new(RwLock::new(HashMap::new())),
+        cache: ResourceCache::new(),
     };
 
     let cors = CorsLayer::new()
@@ -994,6 +1147,7 @@ async fn main() {
         .fallback_service(
             ServeDir::new(&frontend_dir).not_found_service(ServeFile::new(&index_file)),
         )
+        .layer(CompressionLayer::new())
         .layer(cors);
 
     let base_port: u16 = std::env::var("PORT")
@@ -1029,7 +1183,7 @@ async fn main() {
     };
 
     let url = format!("http://localhost:{}", active_port);
-    println!("🦀 Freelens Rust Backend running at {}", url);
+    println!("🦀 lensbyacp Backend running at {}", url);
     println!("☸️ Active Kubernetes Context: {}", initial_context);
 
     // Automatically launch application window on Windows unless disabled

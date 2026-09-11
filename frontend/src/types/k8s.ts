@@ -144,7 +144,15 @@ export interface DeploymentItem {
   spec: {
     replicas: number;
     selector?: any;
-    template?: any;
+    template?: {
+      metadata?: KubeMetadata;
+      spec?: {
+        containers?: ContainerDetail[];
+        initContainers?: ContainerDetail[];
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
   };
   status: {
     replicas?: number;

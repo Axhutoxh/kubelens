@@ -9,9 +9,11 @@ import {
   AlertCircle, 
   Clock,
   ExternalLink,
-  Radio
+  Radio,
+  Tag
 } from 'lucide-react';
 import { PodItem, PortForwardSession } from '../types/k8s';
+import { parseImageTag } from '../components/PodDetailModal';
 
 interface PodsViewProps {
   pods: PodItem[];
@@ -73,6 +75,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
             <tr>
               <th className="py-2.5 px-4 font-semibold">Name</th>
               <th className="py-2.5 px-4 font-semibold">Namespace</th>
+              <th className="py-2.5 px-4 font-semibold">Image Tag</th>
               <th className="py-2.5 px-4 font-semibold">Status</th>
               <th className="py-2.5 px-4 font-semibold">Ready</th>
               <th className="py-2.5 px-4 font-semibold">Restarts</th>
@@ -84,7 +87,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredPods.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={9} className="py-12 text-center text-slate-500 italic">
                   No pods found matching query.
                 </td>
               </tr>
@@ -127,6 +130,24 @@ export const PodsView: React.FC<PodsViewProps> = ({
                       <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
                         {pod.metadata.namespace}
                       </span>
+                    </td>
+                    <td className="py-2.5 px-4">
+                      {(() => {
+                        const firstImg = pod.spec.containers[0]?.image || '';
+                        const { tag } = parseImageTag(firstImg);
+                        return (
+                          <span 
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-mono text-[10px] font-semibold max-w-[150px] truncate"
+                            title={`Full image: ${firstImg} (click pod for details)`}
+                          >
+                            <Tag className="w-2.5 h-2.5 text-cyan-400 shrink-0" />
+                            <span className="truncate">{tag}</span>
+                            {pod.spec.containers.length > 1 && (
+                              <span className="text-slate-500 font-sans text-[9px]">+{pod.spec.containers.length - 1}</span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="py-2.5 px-4">
                       {getPhaseBadge(pod.status.phase)}

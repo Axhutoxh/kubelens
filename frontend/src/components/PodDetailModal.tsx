@@ -64,6 +64,27 @@ interface EditableEnvItem {
   originalValue?: string;
 }
 
+export function parseImageTag(imageStr?: string): { repo: string; tag: string } {
+  if (!imageStr) return { repo: 'unknown', tag: 'latest' };
+
+  if (imageStr.includes('@')) {
+    const parts = imageStr.split('@');
+    return { repo: parts[0], tag: parts[1].substring(0, 16) + '...' };
+  }
+
+  const lastSlash = imageStr.lastIndexOf('/');
+  const lastColon = imageStr.lastIndexOf(':');
+
+  if (lastColon > lastSlash) {
+    return {
+      repo: imageStr.substring(0, lastColon),
+      tag: imageStr.substring(lastColon + 1),
+    };
+  }
+
+  return { repo: imageStr, tag: 'latest' };
+}
+
 interface PodDetailModalProps {
   pod: PodItem;
   context?: string;
@@ -920,6 +941,13 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
         ? 'w-full h-full' 
         : 'relative w-full max-w-5xl max-h-[92vh] rounded-2xl border border-slate-700/80 shadow-2xl shadow-cyan-950/30 z-10 animate-in zoom-in-95 duration-150'
     }`}>
+      {/* Top Loading Progress Bar */}
+      {isLoadingDetail && (
+        <div className="h-0.5 w-full bg-cyan-950 overflow-hidden shrink-0">
+          <div className="h-full bg-gradient-to-r from-cyan-500 via-indigo-400 to-cyan-400 animate-[pulse_1s_infinite] w-full" />
+        </div>
+      )}
+
       {/* Top Header Bar */}
       <div className="px-4 sm:px-6 py-3 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3 select-none flex-wrap">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -1200,6 +1228,77 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                   <div className="text-sm font-bold text-cyan-300 font-mono mt-1">
                     {pod.status.qosClass || 'Burstable'}
                   </div>
+                </div>
+              </div>
+
+              {/* Container Images & Tags Card (Prominently displayed when pod is clicked) */}
+              <div className="rounded-xl bg-slate-950/60 border border-slate-800/90 p-4 space-y-3 shadow-inner">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-cyan-400" />
+                    <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                      Container Images &amp; Tags ({pod.spec.containers.length})
+                    </h3>
+                  </div>
+                  <span className="text-[11px] text-slate-400 font-sans">
+                    Click copy icon to copy tag
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {pod.spec.containers.map((c, idx) => {
+                    const { repo, tag } = parseImageTag(c.image);
+                    const status = pod.status.containerStatuses?.find((cs) => cs.name === c.name);
+                    const isReady = status?.ready ?? false;
+
+                    return (
+                      <div 
+                        key={c.name}
+                        className="p-3.5 rounded-xl bg-slate-900/95 border border-slate-800/90 hover:border-cyan-500/50 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className={`w-3 h-3 rounded-full shrink-0 ${isReady ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-rose-400'}`} />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2.5 flex-wrap">
+                              <span className="font-bold text-slate-100 font-mono text-sm">{c.name}</span>
+                              <span className="text-slate-500 text-xs">#{idx + 1}</span>
+                              {/* Image Tag Highlighted Badge */}
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-950/90 text-cyan-300 border border-cyan-600/70 font-mono text-xs font-bold shadow-sm shadow-cyan-950/60">
+                                <Tag className="w-3 h-3 text-cyan-400" />
+                                <span>tag:</span>
+                                <span className="text-white font-black underline decoration-cyan-400 decoration-2">{tag}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(tag, `Tag (${c.name})`)}
+                                className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors cursor-pointer"
+                                title={`Copy Image Tag "${tag}"`}
+                              >
+                                {copiedText === `Tag (${c.name})` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+                            <div className="text-xs font-mono text-slate-400 truncate mt-1 max-w-xl" title={c.image}>
+                              <span className="text-slate-500">Full Image: </span>
+                              <span className="text-slate-300">{repo}</span>
+                              <span className="text-cyan-400 font-bold">:{tag}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(c.image, `Full Image (${c.name})`)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 text-xs font-mono flex items-center gap-1.5 transition-colors border border-slate-700/80 cursor-pointer"
+                            title="Copy Full Image string"
+                          >
+                            {copiedText === `Full Image (${c.name})` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>Copy Image URI</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2136,7 +2235,9 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
         <div className="px-4 sm:px-6 py-2.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 select-none shrink-0">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-cyan-400" />
-            <span className="truncate max-w-[200px]">{context ? `Cluster: ${context}` : 'Freelens Native Kubernetes IDE'}</span>
+            <span className="truncate max-w-[280px]">{context ? `Cluster: ${context}` : 'lensbyacp Kubernetes IDE'}</span>
+            <span className="text-slate-600">•</span>
+            <span className="text-cyan-400/90 font-medium">Developed by Ashutosh Chandra</span>
           </div>
 
           <div className="flex items-center gap-3">
