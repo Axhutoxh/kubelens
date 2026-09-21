@@ -169,7 +169,14 @@ export const App: React.FC = () => {
         promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])).catch(() => {}));
       }
       if (currentView === 'ingresses') {
-        promises.push(fetchK8sResource<IngressItem>('ingresses', ns, currentContext).then((res) => setIngresses(res.items || [])).catch(() => {}));
+        promises.push(
+          fetchK8sResource<IngressItem>('ingresses', ns, currentContext)
+            .then((res) => setIngresses(Array.isArray(res?.items) ? res.items : []))
+            .catch((err) => {
+              console.error('Failed to load ingresses:', err);
+              setIngresses([]);
+            })
+        );
       }
       if (currentView === 'configmaps') {
         promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])).catch(() => {}));
@@ -184,7 +191,7 @@ export const App: React.FC = () => {
     } finally {
       setIsRefreshing(false);
     }
-  }, [currentView, selectedNamespace, namespaces.length]);
+  }, [currentView, selectedNamespace, namespaces.length, currentContext]);
 
   useEffect(() => {
     loadContexts();

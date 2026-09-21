@@ -183,7 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-mono text-cyan-400/90 font-bold tracking-tight">⚡ lensbyacp</span>
               <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
-                v1.0 Native
+                v1.0.1 Native
               </span>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">

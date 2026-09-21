@@ -4,6 +4,9 @@ const { spawn, execSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 
+// Prevent caching older assets across app updates
+app.commandLine.appendSwitch('disable-http-cache');
+
 let mainWindow = null;
 let backendProcess = null;
 let targetUrl = 'http://localhost:9090';
@@ -188,6 +191,13 @@ function createMainWindow() {
       shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  // F12 to toggle DevTools
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools();
+    }
   });
 
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {

@@ -46,20 +46,23 @@ export const IngressesView: React.FC<IngressesViewProps> = ({
 }) => {
   const [selectedIngress, setSelectedIngress] = useState<IngressItem | null>(null);
 
-  const filtered = ingresses.filter((item) => {
-    const q = searchQuery.toLowerCase();
-    const name = item.metadata.name.toLowerCase();
+  const safeIngresses = Array.isArray(ingresses) ? ingresses : [];
+
+  const filtered = safeIngresses.filter((item) => {
+    if (!item || !item.metadata) return false;
+    const q = (searchQuery || '').toLowerCase();
+    const name = (item.metadata.name || '').toLowerCase();
     const ns = (item.metadata.namespace || '').toLowerCase();
 
     // Check rules (hosts and paths)
     const rules = item.spec?.rules || [];
     const matchesRules = rules.some((r) => {
-      const host = (r.host || '').toLowerCase();
+      const host = (r?.host || '').toLowerCase();
       if (host.includes(q)) return true;
-      const paths = r.http?.paths || [];
+      const paths = r?.http?.paths || [];
       return paths.some((p) => {
-        const pathStr = (p.path || '').toLowerCase();
-        const svc = (p.backend?.service?.name || '').toLowerCase();
+        const pathStr = (p?.path || '').toLowerCase();
+        const svc = (p?.backend?.service?.name || p?.backend?.resource?.name || '').toLowerCase();
         return pathStr.includes(q) || svc.includes(q);
       });
     });
@@ -67,7 +70,7 @@ export const IngressesView: React.FC<IngressesViewProps> = ({
     // Check load balancer endpoints
     const eps = item.status?.loadBalancer?.ingress || [];
     const matchesEps = eps.some(
-      (ep) => (ep.ip || '').toLowerCase().includes(q) || (ep.hostname || '').toLowerCase().includes(q)
+      (ep) => (ep?.ip || '').toLowerCase().includes(q) || (ep?.hostname || '').toLowerCase().includes(q)
     );
 
     return name.includes(q) || ns.includes(q) || matchesRules || matchesEps;
@@ -116,20 +119,23 @@ export const IngressesView: React.FC<IngressesViewProps> = ({
               </tr>
             ) : (
               filtered.map((item) => {
-                const spec = item.spec;
-                const metadata = item.metadata;
-                const rules = spec?.rules || [];
-                const tls = spec?.tls || [];
-                const tlsHosts = new Set(tls.flatMap((t) => t.hosts || []));
+                const spec = item.spec || {};
+                const metadata = item.metadata || { name: 'unnamed', namespace: 'default' };
+                const rules = spec.rules || [];
+                const tls = spec.tls || [];
+                const tlsHosts = new Set(
+                  tls.flatMap((t) => (Array.isArray(t?.hosts) ? t.hosts : t?.hosts ? [t.hosts] : []))
+                );
 
                 // Extract all paths across rules
                 const allPaths: Array<{ host: string; path: string; fullUrl: string }> = [];
                 for (const r of rules) {
-                  const h = r.host || '';
+                  const h = r?.host || '';
                   const isTls = h && tlsHosts.has(h);
                   const scheme = isTls ? 'https' : 'http';
-                  for (const p of r.http?.paths || []) {
-                    const pathStr = p.path || '/';
+                  const rulePaths = r?.http?.paths || [];
+                  for (const p of rulePaths) {
+                    const pathStr = p?.path || '/';
                     const fullUrl = h ? `${scheme}://${h}${pathStr}` : pathStr;
                     allPaths.push({ host: h, path: pathStr, fullUrl });
                   }
@@ -141,10 +147,11 @@ export const IngressesView: React.FC<IngressesViewProps> = ({
 
                 // LoadBalancers
                 const lbEndpoints = item.status?.loadBalancer?.ingress || [];
-                const lbString = lbEndpoints
-                  .map((ep) => ep.ip || ep.hostname)
-                  .filter(Boolean)
-                  .join(', ') || '-';
+                const lbString =
+                  lbEndpoints
+                    .map((ep) => ep?.ip || ep?.hostname)
+                    .filter(Boolean)
+                    .join(', ') || '-';
 
                 return (
                   <tr

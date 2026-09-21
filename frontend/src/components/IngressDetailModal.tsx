@@ -35,16 +35,18 @@ export const IngressDetailModal: React.FC<IngressDetailModalProps> = ({
 }) => {
   const [showMetadata, setShowMetadata] = useState(false);
 
-  if (!isOpen || !ingress) return null;
+  if (!isOpen || !ingress || !ingress.metadata) return null;
 
   const metadata = ingress.metadata;
-  const spec = ingress.spec;
-  const status = ingress.status;
+  const spec = ingress.spec || {};
+  const status = ingress.status || {};
 
-  const rules = spec?.rules || [];
-  const tls = spec?.tls || [];
-  const tlsHosts = new Set(tls.flatMap((t) => t.hosts || []));
-  const lbEndpoints = status?.loadBalancer?.ingress || [];
+  const rules = spec.rules || [];
+  const tls = spec.tls || [];
+  const tlsHosts = new Set(
+    tls.flatMap((t) => (Array.isArray(t?.hosts) ? t.hosts : t?.hosts ? [t.hosts] : []))
+  );
+  const lbEndpoints = status.loadBalancer?.ingress || [];
   const annotations = metadata.annotations || {};
   const labels = metadata.labels || {};
 
