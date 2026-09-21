@@ -1,6 +1,6 @@
 [package]
 name = "freelens-rust"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["Ashutosh Chandra"]
 description = "lensbyacp - High-performance Kubernetes IDE backend"

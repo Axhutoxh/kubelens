@@ -4,5 +4,5 @@ contextBridge.exposeInMainWorld('freelensDesktop', {
   isElectron: true,
   platform: process.platform,
   version: process.versions.electron,
-  appVersion: '1.0.0',
+  appVersion: '1.0.1',
 });

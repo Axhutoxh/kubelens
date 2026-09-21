@@ -58,6 +58,6 @@ if errorlevel 1 (
 echo.
 echo ===================================================
 echo SUCCESS: Setup Installer Executables Created!
-echo Output: %~dp0frontend\release\lensbyacp Setup 1.0.0.exe
+echo Output: %~dp0frontend\release\lensbyacp Setup 1.0.1.exe
 echo ===================================================
 exit /b 0

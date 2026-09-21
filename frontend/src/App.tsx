@@ -11,6 +11,7 @@ import { PodsView } from './views/PodsView';
 import { DeploymentsView } from './views/DeploymentsView';
 import { NodesView } from './views/NodesView';
 import { ServicesView } from './views/ServicesView';
+import { IngressesView } from './views/IngressesView';
 import { ConfigView } from './views/ConfigView';
 import { EventsView } from './views/EventsView';
 import { SmartLensStudio } from './views/SmartLensStudio';
@@ -36,6 +37,7 @@ import {
   EventItem,
   ConfigMapItem,
   SecretItem,
+  IngressItem,
   PortForwardSession
 } from './types/k8s';
 
@@ -77,6 +79,7 @@ export const App: React.FC = () => {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [configMaps, setConfigMaps] = useState<ConfigMapItem[]>([]);
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
+  const [ingresses, setIngresses] = useState<IngressItem[]>([]);
 
   // Dock & Multi-Task State
   const [isDockOpen, setIsDockOpen] = useState(false);
@@ -164,6 +167,9 @@ export const App: React.FC = () => {
       }
       if (currentView === 'services' || currentView === 'overview') {
         promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'ingresses') {
+        promises.push(fetchK8sResource<IngressItem>('ingresses', ns, currentContext).then((res) => setIngresses(res.items || [])).catch(() => {}));
       }
       if (currentView === 'configmaps') {
         promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])).catch(() => {}));
@@ -419,6 +425,18 @@ export const App: React.FC = () => {
               searchQuery={searchQuery}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'ingresses' && (
+            <IngressesView
+              ingresses={ingresses}
+              searchQuery={searchQuery}
+              currentContext={currentContext}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+              onRefresh={loadResources}
+              onToast={showToast}
             />
           )}
 

@@ -81,6 +81,27 @@ kind: Namespace
 metadata:
   name: new-environment
 `,
+  Ingress: `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: demo.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: demo-service
+            port:
+              number: 80
+`,
 };
 
 export const CreateResourceModal: React.FC<CreateResourceModalProps> = ({

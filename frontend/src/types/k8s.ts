@@ -226,3 +226,61 @@ export interface SecretItem {
   type: string;
   data?: Record<string, string>;
 }
+
+export interface IngressBackend {
+  service?: {
+    name: string;
+    port?: {
+      number?: number;
+      name?: string;
+    };
+  };
+  resource?: {
+    apiGroup?: string;
+    kind: string;
+    name: string;
+  };
+}
+
+export interface IngressPath {
+  path?: string;
+  pathType?: string;
+  backend: IngressBackend;
+}
+
+export interface IngressRule {
+  host?: string;
+  http?: {
+    paths: IngressPath[];
+  };
+}
+
+export interface IngressTLS {
+  hosts?: string[];
+  secretName?: string;
+}
+
+export interface IngressLoadBalancerEndpoint {
+  ip?: string;
+  hostname?: string;
+  ports?: Array<{
+    port: number;
+    protocol: string;
+    error?: string;
+  }>;
+}
+
+export interface IngressItem {
+  metadata: KubeMetadata;
+  spec?: {
+    ingressClassName?: string;
+    defaultBackend?: IngressBackend;
+    rules?: IngressRule[];
+    tls?: IngressTLS[];
+  };
+  status?: {
+    loadBalancer?: {
+      ingress?: IngressLoadBalancerEndpoint[];
+    };
+  };
+}

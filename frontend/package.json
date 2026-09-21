@@ -3,7 +3,7 @@
   "productName": "lensbyacp",
   "author": "Ashutosh Chandra",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "lensbyacp - Modern Kubernetes Desktop IDE by Ashutosh Chandra",
   "type": "module",
   "main": "electron/main.cjs",
