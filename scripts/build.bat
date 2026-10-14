@@ -30,7 +30,12 @@ echo Copying binaries and setup installer to release\ ...
 if not exist "%OUT%" mkdir "%OUT%"
 copy /y "%ROOT%\target\release\freelens-rust.exe" "%OUT%\kubellens.exe"
 copy /y "%ROOT%\WebView2Loader.dll" "%OUT%\WebView2Loader.dll"
-for %%F in ("%ROOT%\target\release\bundle\nsis\*-setup.exe") do copy /y "%%F" "%OUT%\kubellens-setup.exe"
+rem Newest installer only: the nsis folder can still hold installers from older builds/product names
+for /f "delims=" %%F in ('dir /b /o-d "%ROOT%\target\release\bundle\nsis\*-setup.exe"') do (
+    copy /y "%ROOT%\target\release\bundle\nsis\%%F" "%OUT%\kubellens-setup.exe"
+    goto :copied
+)
+:copied
 
 echo.
 echo ===================================================

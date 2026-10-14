@@ -10,7 +10,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures_util::Stream;
+use axum::body::Bytes;
+use futures_util::{
+    future::{BoxFuture, FutureExt, Shared},
+    Stream,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -18,38 +22,47 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     process::Stdio,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
     time::Instant,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
-    sync::RwLock,
+    sync::{OnceCell, RwLock},
 };
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-};
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct CachedEntry {
-    payload: Arc<String>,
+    // Bytes is reference-counted, so serving a cache hit never copies the payload
+    payload: Bytes,
     expires_at: Instant,
 }
+
+type InflightFetch = Shared<BoxFuture<'static, Result<Bytes, String>>>;
 
 #[derive(Clone)]
 struct ResourceCache {
     entries: Arc<RwLock<HashMap<String, CachedEntry>>>,
+    // Identical concurrent requests share one kubectl process instead of spawning one each
+    inflight: Arc<std::sync::Mutex<HashMap<String, InflightFetch>>>,
+    // Bumped on every invalidation so a fetch that started before a mutation is not cached
+    generation: Arc<AtomicU64>,
 }
 
 impl ResourceCache {
     fn new() -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
+            inflight: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    async fn get(&self, key: &str) -> Option<Arc<String>> {
+    async fn get(&self, key: &str) -> Option<Bytes> {
         let now = Instant::now();
         let map = self.entries.read().await;
         if let Some(entry) = map.get(key) {
@@ -60,9 +73,8 @@ impl ResourceCache {
         None
     }
 
-    async fn set(&self, key: String, payload: String, ttl_secs: u64) -> Arc<String> {
+    async fn set(&self, key: String, payload: Bytes, ttl_secs: u64) {
         let now = Instant::now();
-        let shared = Arc::new(payload);
         let mut map = self.entries.write().await;
         if map.len() > 150 {
             map.retain(|_, v| v.expires_at > now);
@@ -70,22 +82,68 @@ impl ResourceCache {
         map.insert(
             key,
             CachedEntry {
-                payload: shared.clone(),
+                payload,
                 expires_at: now + std::time::Duration::from_secs(ttl_secs),
             },
         );
-        shared
+    }
+
+    /// Returns the cached kubectl output for `key`, or runs kubectl once and shares the
+    /// result with every request waiting on the same key. Errors are never cached.
+    async fn fetch(&self, key: String, ttl_secs: u64, args: Vec<String>, ctx: String) -> Result<Bytes, String> {
+        if let Some(hit) = self.get(&key).await {
+            return Ok(hit);
+        }
+
+        let fut = {
+            let mut inflight = self.inflight.lock().unwrap();
+            if let Some(existing) = inflight.get(&key) {
+                existing.clone()
+            } else {
+                let cache = self.clone();
+                let k = key.clone();
+                let started_gen = self.generation.load(Ordering::Acquire);
+                let fut = async move {
+                    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                    let res = run_kubectl_cmd(&arg_refs, &ctx).await.map(Bytes::from);
+                    if let Ok(ref bytes) = res {
+                        if cache.generation.load(Ordering::Acquire) == started_gen {
+                            cache.set(k.clone(), bytes.clone(), ttl_secs).await;
+                        }
+                    }
+                    cache.inflight.lock().unwrap().remove(&k);
+                    res
+                }
+                .boxed()
+                .shared();
+                inflight.insert(key, fut.clone());
+                fut
+            }
+        };
+        fut.await
+    }
+
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     async fn invalidate_prefix(&self, prefix: &str) {
+        self.bump_generation();
+        self.inflight.lock().unwrap().retain(|k, _| !k.starts_with(prefix));
         let mut map = self.entries.write().await;
         map.retain(|k, _| !k.starts_with(prefix));
     }
 
     async fn invalidate_all(&self) {
+        self.bump_generation();
+        self.inflight.lock().unwrap().clear();
         let mut map = self.entries.write().await;
         map.clear();
     }
+}
+
+fn json_response(body: Bytes) -> Response {
+    ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -111,8 +169,27 @@ struct ActivePortForward {
 #[derive(Clone)]
 struct AppState {
     current_context: Arc<RwLock<String>>,
+    // The initial `kubectl config current-context` lookup runs in the background so the
+    // window can open immediately; handlers wait on it only if it hasn't finished yet.
+    context_init: Arc<OnceCell<()>>,
     port_forwards: Arc<RwLock<HashMap<String, ActivePortForward>>>,
     cache: ResourceCache,
+}
+
+impl AppState {
+    async fn ctx(&self) -> String {
+        self.context_init
+            .get_or_init(|| async {
+                let detected = get_current_context().await;
+                let mut lock = self.current_context.write().await;
+                // A context switch may have landed first; don't overwrite it
+                if lock.is_empty() {
+                    *lock = detected;
+                }
+            })
+            .await;
+        self.current_context.read().await.clone()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -253,6 +330,8 @@ fn create_kubectl_cmd() -> Command {
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    // Timed-out commands and closed log streams must not leave kubectl processes behind
+    cmd.kill_on_drop(true);
     cmd
 }
 
@@ -308,10 +387,10 @@ async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, Str
 
 // Handlers
 async fn handle_contexts(State(state): State<AppState>) -> impl IntoResponse {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
 
     if let Some(cached) = state.cache.get("contexts").await {
-        if let Ok(mut resp) = serde_json::from_str::<ContextResponse>(&cached) {
+        if let Ok(mut resp) = serde_json::from_slice::<ContextResponse>(&cached) {
             resp.current_context = current_ctx.clone();
             for c in &mut resp.contexts {
                 c.is_active = c.name == current_ctx;
@@ -345,7 +424,7 @@ async fn handle_contexts(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     if let Ok(json_str) = serde_json::to_string(&resp) {
-        state.cache.set("contexts".to_string(), json_str, 5).await;
+        state.cache.set("contexts".to_string(), Bytes::from(json_str), 5).await;
     }
 
     Json(resp)
@@ -382,16 +461,12 @@ async fn handle_cluster_overview(
     Query(q): Query<ClusterOverviewQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let cache_key = format!("overview:{}", ctx_to_use);
 
     if let Some(cached) = state.cache.get(&cache_key).await {
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            (*cached).clone(),
-        )
-            .into_response();
+        return json_response(cached);
     }
 
     // Run parallel async queries using tokio::join! with lightweight jsonpath
@@ -405,20 +480,16 @@ async fn handle_cluster_overview(
     let pods_count = pods_res.ok().map(|s| s.split_whitespace().count()).unwrap_or(0);
     let ns_count = ns_res.ok().map(|s| s.split_whitespace().count()).unwrap_or(0);
 
-    let payload = serde_json::json!({
+    let payload = Bytes::from(serde_json::json!({
         "context": ctx_to_use,
         "nodesCount": nodes_count,
         "podsCount": pods_count,
         "namespacesCount": ns_count
-    }).to_string();
+    }).to_string());
 
     state.cache.set(cache_key, payload.clone(), 4).await;
 
-    (
-        [(header::CONTENT_TYPE, "application/json")],
-        payload,
-    )
-        .into_response()
+    json_response(payload)
 }
 
 async fn handle_k8s_resource(
@@ -426,51 +497,33 @@ async fn handle_k8s_resource(
     Query(query): Query<ResourceQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
-    let ctx_to_use = query.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = query.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
     let cache_key = format!("k8s:{}:{}:{}", ctx_to_use, kind, query.namespace.as_deref().unwrap_or("_all"));
 
-    if let Some(cached) = state.cache.get(&cache_key).await {
-        return Ok((
-            [(header::CONTENT_TYPE, "application/json")],
-            (*cached).clone(),
-        )
-            .into_response());
-    }
-
-    let mut args = vec!["get", &kind, "-o", "json"];
-
-    let ns_val;
-    if let Some(ns) = &query.namespace {
-        if ns != "_all" {
-            ns_val = ns.clone();
-            args.push("-n");
-            args.push(&ns_val);
-        } else {
-            args.push("-A");
+    let mut args = vec!["get".to_string(), kind, "-o".to_string(), "json".to_string()];
+    match query.namespace {
+        Some(ns) if ns != "_all" => {
+            args.push("-n".to_string());
+            args.push(ns);
         }
-    } else {
-        args.push("-A");
+        _ => args.push("-A".to_string()),
     }
 
-    let out = run_kubectl_cmd(&args, ctx_to_use)
+    let out = state
+        .cache
+        .fetch(cache_key, 3, args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    state.cache.set(cache_key, out.clone(), 3).await;
-
-    Ok((
-        [(header::CONTENT_TYPE, "application/json")],
-        out,
-    )
-        .into_response())
+    Ok(json_response(out))
 }
 
 async fn handle_get_manifest(
     Query(q): Query<ManifestQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let mut args = vec!["get", &q.kind, &q.name, "-o", "yaml"];
 
@@ -496,7 +549,7 @@ async fn handle_apply_manifest(
     State(state): State<AppState>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let mut cmd = create_kubectl_cmd();
     if !ctx_to_use.is_empty() {
@@ -541,7 +594,7 @@ async fn handle_delete_resource(
     State(state): State<AppState>,
     Json(req): Json<DeleteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let mut args = vec!["delete", &req.kind, &req.name];
 
@@ -570,7 +623,7 @@ async fn handle_scale_resource(
     State(state): State<AppState>,
     Json(req): Json<ScaleRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let target = format!("{}/{}", req.kind, req.name);
     let replicas_arg = format!("--replicas={}", req.replicas);
@@ -592,7 +645,7 @@ async fn handle_restart_resource(
     State(state): State<AppState>,
     Json(req): Json<RestartRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let target = format!("{}/{}", req.kind, req.name);
     let args = vec!["rollout", "restart", &target, "-n", &req.namespace];
@@ -614,7 +667,7 @@ async fn handle_pod_logs(
     Query(q): Query<LogsQuery>,
     State(state): State<AppState>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     let mut cmd = create_kubectl_cmd();
     if !ctx_to_use.is_empty() {
@@ -652,6 +705,9 @@ async fn handle_pod_logs(
     let mut lines = reader.lines();
 
     let stream = async_stream::stream! {
+        // Owning the child here ties the kubectl process to the SSE connection:
+        // when the client closes the log tab the stream is dropped and kubectl is killed.
+        let _child = child;
         while let Ok(Some(line)) = lines.next_line().await {
             yield Ok(Event::default().data(line));
         }
@@ -673,84 +729,60 @@ async fn handle_resource_detail(
     Query(q): Query<ResourceDetailQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
-    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
     let cache_key = format!("detail:{}:{}:{}:{}", ctx_to_use, q.kind, q.namespace.as_deref().unwrap_or(""), q.name);
 
-    if let Some(cached) = state.cache.get(&cache_key).await {
-        return Ok((
-            [(header::CONTENT_TYPE, "application/json")],
-            (*cached).clone(),
-        ).into_response());
-    }
-
-    let mut args = vec!["get", &q.kind, &q.name, "-o", "json"];
-
-    let ns_val;
-    if let Some(ns) = &q.namespace {
+    let mut args = vec!["get".to_string(), q.kind, q.name, "-o".to_string(), "json".to_string()];
+    if let Some(ns) = q.namespace {
         if !ns.is_empty() && ns != "_all" {
-            ns_val = ns.clone();
-            args.push("-n");
-            args.push(&ns_val);
+            args.push("-n".to_string());
+            args.push(ns);
         }
     }
 
-    let out = run_kubectl_cmd(&args, ctx_to_use)
+    let out = state
+        .cache
+        .fetch(cache_key, 5, args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    state.cache.set(cache_key, out.clone(), 5).await;
-
-    Ok((
-        [(header::CONTENT_TYPE, "application/json")],
-        out,
-    ).into_response())
+    Ok(json_response(out))
 }
 
 async fn handle_pod_events(
     Query(q): Query<PodEventsQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
-    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
     let cache_key = format!("events:{}:{}:{}", ctx_to_use, q.namespace, q.name);
 
-    if let Some(cached) = state.cache.get(&cache_key).await {
-        return Ok((
-            [(header::CONTENT_TYPE, "application/json")],
-            (*cached).clone(),
-        ).into_response());
-    }
-
-    let field_selector = format!("involvedObject.name={}", q.name);
-    let args = [
-        "get",
-        "events",
-        "--field-selector",
-        &field_selector,
-        "-n",
-        &q.namespace,
-        "-o",
-        "json",
+    let args = vec![
+        "get".to_string(),
+        "events".to_string(),
+        "--field-selector".to_string(),
+        format!("involvedObject.name={}", q.name),
+        "-n".to_string(),
+        q.namespace,
+        "-o".to_string(),
+        "json".to_string(),
     ];
 
-    let out = run_kubectl_cmd(&args, ctx_to_use)
+    let out = state
+        .cache
+        .fetch(cache_key, 3, args, ctx_to_use)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    state.cache.set(cache_key, out.clone(), 3).await;
-
-    Ok((
-        [(header::CONTENT_TYPE, "application/json")],
-        out,
-    ).into_response())
+    Ok(json_response(out))
 }
 
 async fn handle_set_env(
     State(state): State<AppState>,
     Json(req): Json<SetEnvRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
 
     // 1. Fetch Pod JSON to inspect owners and container spec
@@ -912,7 +944,7 @@ async fn handle_start_port_forward(
     State(state): State<AppState>,
     Json(req): Json<StartPortForwardRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.current_context.read().await.clone();
+    let current_ctx = state.ctx().await;
     let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
     
     let requested_port = req.local_port.unwrap_or(0);
@@ -1046,122 +1078,83 @@ async fn handle_list_port_forwards(State(state): State<AppState>) -> impl IntoRe
 #[folder = "frontend/dist/"]
 struct EmbeddedFrontend;
 
+/// Optional on-disk UI override (FREELENS_STATIC_DIR), resolved once at startup.
+/// Without it the UI is served from the assets compiled into the binary.
+fn static_dir_override() -> Option<&'static PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        std::env::var("FREELENS_STATIC_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.join("index.html").is_file())
+    })
+    .as_ref()
+}
+
+fn asset_response(path: &str, body: Bytes) -> Response {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    // Vite emits content-hashed file names under assets/, so they can be cached forever;
+    // everything else (index.html, logo) is revalidated so a new build is picked up.
+    let cache = if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    (
+        [
+            (header::CONTENT_TYPE, mime.as_ref().to_string()),
+            (header::CACHE_CONTROL, cache.to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn load_asset(path: &str) -> Option<Bytes> {
+    if let Some(dir) = static_dir_override() {
+        if let Ok(bytes) = tokio::fs::read(dir.join(path)).await {
+            return Some(Bytes::from(bytes));
+        }
+    }
+    EmbeddedFrontend::get(path).map(|f| match f.data {
+        std::borrow::Cow::Borrowed(b) => Bytes::from_static(b),
+        std::borrow::Cow::Owned(v) => Bytes::from(v),
+    })
+}
+
 async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
     let raw_path = uri.path().trim_start_matches('/');
     let path = if raw_path.is_empty() { "index.html" } else { raw_path };
 
-    // 1. Try local disk directory if it exists (development / unpacked run)
-    let frontend_dir = find_frontend_dir();
-    let file_path = frontend_dir.join(path);
-    if file_path.is_file() {
-        if let Ok(bytes) = tokio::fs::read(&file_path).await {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            return (
-                [(header::CONTENT_TYPE, mime.as_ref())],
-                bytes,
-            ).into_response();
-        }
+    if let Some(bytes) = load_asset(path).await {
+        return asset_response(path, bytes);
     }
 
-    // 2. Try embedded assets compiled directly into the binary
-    if let Some(content) = EmbeddedFrontend::get(path) {
-        let mime = mime_guess::from_path(path).first_or_octet_stream();
-        return (
-            [(header::CONTENT_TYPE, mime.as_ref())],
-            content.data.into_owned(),
-        ).into_response();
-    }
-
-    // 3. Fallback to index.html for Single-Page Application (SPA) client routes
-    let index_file = frontend_dir.join("index.html");
-    if index_file.is_file() {
-        if let Ok(bytes) = tokio::fs::read(&index_file).await {
-            return (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                bytes,
-            ).into_response();
-        }
-    }
-
-    if let Some(index) = EmbeddedFrontend::get("index.html") {
-        return (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            index.data.into_owned(),
-        ).into_response();
+    // Fallback to index.html for Single-Page Application (SPA) client routes
+    if let Some(index) = load_asset("index.html").await {
+        return asset_response("index.html", index);
     }
 
     (StatusCode::NOT_FOUND, "lensbyacp: UI assets not found").into_response()
 }
 
-fn find_frontend_dir() -> PathBuf {
-    // 0. Explicit environment variable (from Electron or packaging)
-    if let Ok(dir) = std::env::var("FREELENS_STATIC_DIR") {
-        let p = PathBuf::from(&dir);
-        if p.exists() && p.join("index.html").exists() {
-            return p;
-        }
-        if p.exists() {
-            return p;
-        }
-    }
-
-    // 1. Current working directory
-    let cwd_candidates = [
-        PathBuf::from("frontend/dist"),
-        PathBuf::from("dist"),
-        PathBuf::from("../frontend/dist"),
-        PathBuf::from("../dist"),
-    ];
-    for c in &cwd_candidates {
-        if c.exists() && c.join("index.html").exists() {
-            return c.clone();
-        }
-    }
-
-    // 2. Relative to the executable (Handles packaged Electron app: resources/bin/freelens-rust.exe)
-    if let Ok(mut exe) = std::env::current_exe() {
-        exe.pop(); // remove executable file name (e.g. resources/bin or target/release)
-        
-        let exe_candidates = [
-            exe.join("..").join("dist"),              // resources/dist (packaged Electron app)
-            exe.join("dist"),                         // exe_dir/dist
-            exe.join("frontend").join("dist"),        // exe_dir/frontend/dist
-            exe.join("..").join("frontend").join("dist"), // exe_dir/../frontend/dist
-            exe.join("..").join("..").join("frontend").join("dist"), // target/release -> freelens-rust/frontend/dist
-            exe.join("..").join("..").join("dist"),
-        ];
-
-        for c in &exe_candidates {
-            if c.exists() && c.join("index.html").exists() {
-                return c.clone();
-            }
-        }
-
-        // Check if any candidate exists even without index.html
-        for c in &exe_candidates {
-            if c.exists() {
-                return c.clone();
-            }
-        }
-    }
-
-    for c in &cwd_candidates {
-        if c.exists() {
-            return c.clone();
-        }
-    }
-
-    PathBuf::from("frontend/dist")
-}
-
 #[tokio::main]
 async fn main() {
-    let initial_context = get_current_context().await;
     let state = AppState {
-        current_context: Arc::new(RwLock::new(initial_context.clone())),
+        current_context: Arc::new(RwLock::new(String::new())),
+        context_init: Arc::new(OnceCell::new()),
         port_forwards: Arc::new(RwLock::new(HashMap::new())),
         cache: ResourceCache::new(),
     };
+
+    // Resolve the active kube context in the background instead of blocking window startup
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let ctx = state.ctx().await;
+            println!("☸️ Active Kubernetes Context: {}", ctx);
+        });
+    }
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1187,15 +1180,14 @@ async fn main() {
         .route("/port-forward/list", get(handle_list_port_forwards))
         .with_state(state);
 
-    let frontend_dir = find_frontend_dir();
-
-
-    println!("📁 Serving UI from: {:?}", frontend_dir);
+    match static_dir_override() {
+        Some(dir) => println!("📁 Serving UI from: {:?}", dir),
+        None => println!("📁 Serving UI from embedded assets"),
+    }
 
     let app = Router::new()
         .nest("/api", api_router)
         .fallback(static_handler)
-        .layer(CompressionLayer::new())
         .layer(cors);
 
     let base_port: u16 = std::env::var("PORT")
@@ -1203,22 +1195,24 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(9090);
 
-    // Try base_port, or find next available port up to +10
+    // The API can read secrets and exec into the cluster, so only listen on loopback
+    // unless explicitly asked to expose it (e.g. headless server mode on a remote box).
+    let bind_ip: [u8; 4] = if std::env::var("FREELENS_BIND_ALL").is_ok() {
+        [0, 0, 0, 0]
+    } else {
+        [127, 0, 0, 1]
+    };
+
+    // Try base_port, or find next available port up to +15
     let mut bound_listener = None;
     let mut active_port = base_port;
 
     for p in base_port..(base_port + 15) {
-        let addr = SocketAddr::from(([0, 0, 0, 0], p));
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => {
-                bound_listener = Some(listener);
-                active_port = p;
-                break;
-            }
-            Err(_) => {
-                // Port busy, try next
-                continue;
-            }
+        let addr = SocketAddr::from((bind_ip, p));
+        if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
+            bound_listener = Some(listener);
+            active_port = p;
+            break;
         }
     }
 
@@ -1232,7 +1226,6 @@ async fn main() {
 
     let url = format!("http://localhost:{}", active_port);
     println!("🦀 lensbyacp Desktop running at {}", url);
-    println!("☸️ Active Kubernetes Context: {}", initial_context);
 
     // Spawn high-speed Axum backend server in background Tokio task
     tokio::spawn(async move {
@@ -1251,7 +1244,8 @@ async fn main() {
         return;
     }
 
-    // Launch native Tauri desktop application window
+    // Launch native Tauri desktop application window. It opens on the bundled splash
+    // screen and is pointed at the local server as soon as the window exists.
     tauri::Builder::default()
         .setup(move |app_handle| {
             use tauri::Manager;
@@ -1267,4 +1261,3 @@ async fn main() {
         .run(tauri::generate_context!())
         .expect("error while running lensbyacp Tauri application");
 }
-

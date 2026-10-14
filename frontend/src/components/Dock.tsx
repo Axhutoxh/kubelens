@@ -15,6 +15,9 @@ import {
 } from 'lucide-react';
 import { applyManifest } from '../api/client';
 
+// Upper bound on lines kept in memory per log view (oldest lines are dropped first)
+const MAX_LOG_LINES = 5000;
+
 export interface DockTask {
   id: string;
   type: 'logs' | 'manifest';
@@ -104,8 +107,24 @@ export const Dock: React.FC<DockProps> = ({
     const es = new EventSource(url.toString());
     eventSourceRef.current = es;
 
+    // Batch incoming lines and flush once per frame: a chatty pod can emit hundreds of
+    // lines a second, and re-rendering per line made the whole window stutter.
+    let pending: string[] = [];
+    let frame = 0;
+    const flush = () => {
+      frame = 0;
+      const batch = pending;
+      pending = [];
+      setLogs((prev) => {
+        const next = prev.concat(batch);
+        // Keep memory bounded on long-running follows
+        return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+      });
+    };
+
     es.onmessage = (event) => {
-      setLogs((prev) => [...prev, event.data]);
+      pending.push(event.data);
+      if (!frame) frame = requestAnimationFrame(flush);
     };
 
     es.onerror = () => {
@@ -113,6 +132,7 @@ export const Dock: React.FC<DockProps> = ({
     };
 
     return () => {
+      if (frame) cancelAnimationFrame(frame);
       es.close();
     };
   }, [isOpen, activeTask?.id, activeTask?.pod, activeTask?.namespace, activeTask?.context, selectedContainer, showTimestamps]);
@@ -120,7 +140,8 @@ export const Dock: React.FC<DockProps> = ({
   // Auto-scroll
   useEffect(() => {
     if (isFollowing && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      // Instant scroll: smooth scrolling can't keep up with a fast stream and lags behind
+      logsEndRef.current.scrollIntoView({ block: 'end' });
     }
   }, [logs, isFollowing]);
 

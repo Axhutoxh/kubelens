@@ -33,7 +33,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item target/release/freelens-rust.exe release/kubellens.exe
-          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) release/kubellens-setup.exe
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName release/kubellens-setup.exe
 
       - uses: actions/upload-artifact@v4
         with:
