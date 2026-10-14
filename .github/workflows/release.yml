@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      # Same steps as scripts/build.bat: Tauri runs the frontend build, then packages the NSIS installer
+      - name: Build Tauri app
+        run: bun x @tauri-apps/cli build --bundles nsis
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item target/release/freelens-rust.exe release/kubellens.exe
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) release/kubellens-setup.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubellens-windows
+          path: release/*.exe
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/kubellens-setup.exe
+            release/kubellens.exe
+          generate_release_notes: true
