@@ -1,0 +1,26 @@
+# Rust / Tauri build output
+/target
+/gen/schemas
+*.rs.bk
+*.pdb
+
+# Packaged binaries (produced by scripts/build.bat)
+/release
+*.exe
+
+# Frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local scratch / logs
+/_to_delete
+*.log
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
