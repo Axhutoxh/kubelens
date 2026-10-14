@@ -13,10 +13,10 @@ An ultra-high-performance, bare-metal **Kubernetes IDE & Management Dashboard** 
 | **Desktop Shell** | Heavy Electron Chromium shell | **Native Windows WebView2 via Tauri v2 (Pure Rust)** |
 | **Startup Time** | ~3.5 – 4.5 seconds | **< 0.05 seconds (Near-Instant)** |
 | **Memory Consumption (RAM)** | ~500 – 700 MB | **~25 – 45 MB** (even with 650+ Pods loaded!) |
-| **Desktop Runtime** | Node.js + V8 Engine (~180 MB) | **Single Native Rust Executable (~15 MB)** |
+| **Desktop Runtime** | Node.js + V8 Engine (~180 MB) | **Single Native Rust Executable (~6 MB, 1.8 MB installer)** |
 | **Concurrency Engine** | Single-threaded Node.js event loop | **Multi-threaded Tokio async runtime** |
 | **Garbage Collection (GC)** | V8 GC pauses during log streaming | **Zero Garbage Collection pauses (Rust RAII)** |
-| **Frontend Bundle** | ~8 MB | **~468 KB (110 KB gzipped)** |
+| **Frontend Bundle** | ~8 MB | **~260 KB initial load (views lazy-loaded)** |
 
 ---
 

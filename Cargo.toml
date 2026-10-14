@@ -1,6 +1,6 @@
 [package]
 name = "freelens-rust"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Ashutosh Chandra"]
 description = "lensbyacp - High-performance Kubernetes IDE"
@@ -8,8 +8,8 @@ description = "lensbyacp - High-performance Kubernetes IDE"
 [dependencies]
 tauri = { version = "2", features = [] }
 tokio = { version = "1.38", features = ["full"] }
-axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["cors", "fs", "compression-gzip"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-util = "0.3"

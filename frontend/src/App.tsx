@@ -1,25 +1,48 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { Dock, DockTask } from './components/Dock';
 import { CreateResourceModal } from './components/CreateResourceModal';
 import { ScaleModal } from './components/ScaleModal';
-import { PodDetailModal } from './components/PodDetailModal';
+import { ViewLoader } from './components/ViewLoader';
 
-import { ClusterOverview } from './views/ClusterOverview';
-import { PodsView } from './views/PodsView';
-import { DeploymentsView } from './views/DeploymentsView';
-import { StatefulSetsView } from './views/StatefulSetsView';
-import { DaemonSetsView } from './views/DaemonSetsView';
-import { JobsView } from './views/JobsView';
-import { StorageView } from './views/StorageView';
-import { NamespacesView } from './views/NamespacesView';
-import { NodesView } from './views/NodesView';
-import { ServicesView } from './views/ServicesView';
-import { IngressesView } from './views/IngressesView';
-import { ConfigView } from './views/ConfigView';
-import { EventsView } from './views/EventsView';
-import { SmartLensStudio } from './views/SmartLensStudio';
+// Views and the (large) pod detail modal are split into their own chunks and only
+// downloaded/parsed when first opened, which keeps startup work small.
+const PodDetailModal = lazy(() => import('./components/PodDetailModal').then((m) => ({ default: m.PodDetailModal })));
+const ClusterOverview = lazy(() => import('./views/ClusterOverview').then((m) => ({ default: m.ClusterOverview })));
+const PodsView = lazy(() => import('./views/PodsView').then((m) => ({ default: m.PodsView })));
+const DeploymentsView = lazy(() => import('./views/DeploymentsView').then((m) => ({ default: m.DeploymentsView })));
+const StatefulSetsView = lazy(() => import('./views/StatefulSetsView').then((m) => ({ default: m.StatefulSetsView })));
+const DaemonSetsView = lazy(() => import('./views/DaemonSetsView').then((m) => ({ default: m.DaemonSetsView })));
+const JobsView = lazy(() => import('./views/JobsView').then((m) => ({ default: m.JobsView })));
+const StorageView = lazy(() => import('./views/StorageView').then((m) => ({ default: m.StorageView })));
+const NamespacesView = lazy(() => import('./views/NamespacesView').then((m) => ({ default: m.NamespacesView })));
+const NodesView = lazy(() => import('./views/NodesView').then((m) => ({ default: m.NodesView })));
+const ServicesView = lazy(() => import('./views/ServicesView').then((m) => ({ default: m.ServicesView })));
+const IngressesView = lazy(() => import('./views/IngressesView').then((m) => ({ default: m.IngressesView })));
+const ConfigView = lazy(() => import('./views/ConfigView').then((m) => ({ default: m.ConfigView })));
+const EventsView = lazy(() => import('./views/EventsView').then((m) => ({ default: m.EventsView })));
+const SmartLensStudio = lazy(() => import('./views/SmartLensStudio').then((m) => ({ default: m.SmartLensStudio })));
+
+const VIEW_LABELS: Record<string, string> = {
+  overview: 'cluster overview',
+  pods: 'pods',
+  deployments: 'deployments',
+  statefulsets: 'stateful sets',
+  daemonsets: 'daemon sets',
+  jobs: 'jobs',
+  storage: 'storage',
+  namespaces: 'namespaces',
+  nodes: 'nodes',
+  services: 'services',
+  ingresses: 'ingresses',
+  configmaps: 'config maps',
+  secrets: 'secrets',
+  events: 'events',
+};
+
+const POLL_INTERVAL_MS = 10000;
+const PORT_FORWARD_POLL_MS = 4000;
 
 import { 
   fetchContexts, 
@@ -134,7 +157,10 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadPortForwards();
-    const timer = setInterval(loadPortForwards, 4000);
+    // Skip polling while the window is minimized / hidden
+    const timer = setInterval(() => {
+      if (!document.hidden) loadPortForwards();
+    }, PORT_FORWARD_POLL_MS);
     return () => clearInterval(timer);
   }, [loadPortForwards]);
 
@@ -149,17 +175,31 @@ export const App: React.FC = () => {
     }
   };
 
+  // Read through refs inside loadResources so that receiving the namespace list or the
+  // initial context doesn't recreate the callback (which restarted polling and refetched
+  // every resource a second and third time during startup).
+  const namespacesLoadedRef = useRef(false);
+  const currentContextRef = useRef(currentContext);
+  currentContextRef.current = currentContext;
+
+  // Views whose first fetch has completed, keyed by view + namespace. Until then the view
+  // shows a loading skeleton instead of an empty table.
+  const [loadedViews, setLoadedViews] = useState<Set<string>>(() => new Set());
+  const viewKey = `${currentView}|${selectedNamespace}`;
+
   // Fetch all Resources for active cluster & namespace
   const loadResources = useCallback(async (silent = false) => {
     if (currentView === 'smart-lens-studio') return;
+    const loadedKey = `${currentView}|${selectedNamespace}`;
     if (!silent) setIsRefreshing(true);
     try {
       const promises: Promise<any>[] = [];
 
       // Namespaces list (fetch once or on manual refresh)
-      if (!silent || namespaces.length === 0) {
+      if (!silent || !namespacesLoadedRef.current) {
         promises.push(
           fetchK8sResource('namespaces').then((res) => {
+            namespacesLoadedRef.current = true;
             setNamespaces(res.items?.map((ns: any) => ns.metadata.name) || []);
           }).catch(() => {})
         );
@@ -205,7 +245,7 @@ export const App: React.FC = () => {
       }
       if (currentView === 'ingresses') {
         promises.push(
-          fetchK8sResource<IngressItem>('ingresses', ns, currentContext)
+          fetchK8sResource<IngressItem>('ingresses', ns, currentContextRef.current)
             .then((res) => setIngresses(Array.isArray(res?.items) ? res.items : []))
             .catch((err) => {
               console.error('Failed to load ingresses:', err);
@@ -225,8 +265,9 @@ export const App: React.FC = () => {
       showToast(err.message, 'error');
     } finally {
       setIsRefreshing(false);
+      setLoadedViews((prev) => (prev.has(loadedKey) ? prev : new Set(prev).add(loadedKey)));
     }
-  }, [currentView, selectedNamespace, namespaces.length, currentContext]);
+  }, [currentView, selectedNamespace]);
 
   useEffect(() => {
     loadContexts();
@@ -235,10 +276,18 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (currentView === 'smart-lens-studio') return;
     loadResources();
+    // Poll only while the window is visible, and catch up as soon as it is shown again
     const interval = setInterval(() => {
-      loadResources(true);
-    }, 10000);
-    return () => clearInterval(interval);
+      if (!document.hidden) loadResources(true);
+    }, POLL_INTERVAL_MS);
+    const onVisible = () => {
+      if (!document.hidden) loadResources(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [loadResources, currentView]);
 
   // Handle Switch Context
@@ -246,7 +295,10 @@ export const App: React.FC = () => {
     try {
       setIsRefreshing(true);
       await switchContext(newCtx);
+      currentContextRef.current = newCtx;
       setCurrentContext(newCtx);
+      // Data from the previous cluster is stale; show loaders until the new cluster responds
+      setLoadedViews(new Set());
       showToast(`Switched context to ${newCtx}`);
       await loadResources();
     } catch (err: any) {
@@ -411,6 +463,11 @@ export const App: React.FC = () => {
 
         {/* View Routing */}
         <main className="flex-1 overflow-hidden relative bg-slate-950/60">
+          <Suspense fallback={<ViewLoader label={`Loading ${VIEW_LABELS[currentView] || 'view'}…`} />}>
+          {currentView !== 'smart-lens-studio' && !loadedViews.has(viewKey) ? (
+            <ViewLoader label={`Fetching ${VIEW_LABELS[currentView] || 'resources'} from ${currentContext || 'cluster'}…`} />
+          ) : (
+          <>
           {currentView === 'overview' && (
             <ClusterOverview
               overview={overview}
@@ -597,7 +654,9 @@ export const App: React.FC = () => {
               onToast={showToast}
             />
           )}
-
+          </>
+          )}
+          </Suspense>
         </main>
 
         {/* Bottom Dock (Multi-Task: Logs & YAML Editor with per-task close button) */}
@@ -655,6 +714,11 @@ export const App: React.FC = () => {
 
       {/* Pod Detail & Port Forward Modal */}
       {selectedPod && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
+            <div className="w-8 h-8 rounded-full border-2 border-cyan-500/20 border-t-cyan-400 animate-spin" />
+          </div>
+        }>
         <PodDetailModal
           isOpen={!!selectedPod}
           pod={selectedPod}
@@ -673,6 +737,7 @@ export const App: React.FC = () => {
           }}
           onToast={showToast}
         />
+        </Suspense>
       )}
     </div>
   );

@@ -7,10 +7,19 @@
     <title>KUBELLENS - Lens by ACP</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Loaded without blocking first paint: if the network is slow or offline the UI
+         renders immediately with the monospace fallback instead of waiting on Google Fonts. -->
+    <link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+    <style>
+      /* Boot screen, painted before any JS runs; React replaces #root's contents on mount */
+      #boot { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #020617; }
+      #boot .ring { width: 40px; height: 40px; border-radius: 50%; border: 3px solid rgba(34, 211, 238, .15); border-top-color: #22d3ee; animation: boot-spin .8s linear infinite; }
+      #boot .name { font: 700 12px system-ui, "Segoe UI", sans-serif; letter-spacing: .3em; color: #e2e8f0; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body class="bg-slate-950 text-slate-100 antialiased font-sans overflow-hidden selection:bg-cyan-500/30 selection:text-cyan-200">
-    <div id="root"></div>
+    <div id="root"><div id="boot"><div class="ring"></div><div class="name">KUBELLENS</div></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

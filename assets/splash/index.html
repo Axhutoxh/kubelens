@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>KUBELLENS - Lens by ACP</title>
+<!-- Shown by the Tauri window for the instant before it is pointed at the local server.
+     The full UI is served by the Rust backend, so it is not bundled a second time here. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #020617; color: #94a3b8; font-family: system-ui, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; user-select: none; }
+  .ring { width: 44px; height: 44px; border-radius: 50%; border: 3px solid rgba(34, 211, 238, .15); border-top-color: #22d3ee; animation: spin .8s linear infinite; }
+  .name { font-size: 13px; font-weight: 700; letter-spacing: .3em; color: #e2e8f0; }
+  .sub { font-size: 11px; margin-top: -10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div class="ring"></div>
+  <div class="name">KUBELLENS</div>
+  <div class="sub">Starting cluster engine…</div>
+</body>
+</html>
