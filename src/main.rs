@@ -29,7 +29,6 @@ use tokio::{
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
-    services::{ServeDir, ServeFile},
 };
 
 #[derive(Clone)]
@@ -1043,6 +1042,57 @@ async fn handle_list_port_forwards(State(state): State<AppState>) -> impl IntoRe
     Json(serde_json::json!({ "sessions": list }))
 }
 
+#[derive(rust_embed::RustEmbed)]
+#[folder = "frontend/dist/"]
+struct EmbeddedFrontend;
+
+async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
+    let raw_path = uri.path().trim_start_matches('/');
+    let path = if raw_path.is_empty() { "index.html" } else { raw_path };
+
+    // 1. Try local disk directory if it exists (development / unpacked run)
+    let frontend_dir = find_frontend_dir();
+    let file_path = frontend_dir.join(path);
+    if file_path.is_file() {
+        if let Ok(bytes) = tokio::fs::read(&file_path).await {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            return (
+                [(header::CONTENT_TYPE, mime.as_ref())],
+                bytes,
+            ).into_response();
+        }
+    }
+
+    // 2. Try embedded assets compiled directly into the binary
+    if let Some(content) = EmbeddedFrontend::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [(header::CONTENT_TYPE, mime.as_ref())],
+            content.data.into_owned(),
+        ).into_response();
+    }
+
+    // 3. Fallback to index.html for Single-Page Application (SPA) client routes
+    let index_file = frontend_dir.join("index.html");
+    if index_file.is_file() {
+        if let Ok(bytes) = tokio::fs::read(&index_file).await {
+            return (
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                bytes,
+            ).into_response();
+        }
+    }
+
+    if let Some(index) = EmbeddedFrontend::get("index.html") {
+        return (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            index.data.into_owned(),
+        ).into_response();
+    }
+
+    (StatusCode::NOT_FOUND, "lensbyacp: UI assets not found").into_response()
+}
+
 fn find_frontend_dir() -> PathBuf {
     // 0. Explicit environment variable (from Electron or packaging)
     if let Ok(dir) = std::env::var("FREELENS_STATIC_DIR") {
@@ -1138,15 +1188,13 @@ async fn main() {
         .with_state(state);
 
     let frontend_dir = find_frontend_dir();
-    let index_file = frontend_dir.join("index.html");
+
 
     println!("📁 Serving UI from: {:?}", frontend_dir);
 
     let app = Router::new()
         .nest("/api", api_router)
-        .fallback_service(
-            ServeDir::new(&frontend_dir).not_found_service(ServeFile::new(&index_file)),
-        )
+        .fallback(static_handler)
         .layer(CompressionLayer::new())
         .layer(cors);
 
@@ -1183,101 +1231,40 @@ async fn main() {
     };
 
     let url = format!("http://localhost:{}", active_port);
-    println!("🦀 lensbyacp Backend running at {}", url);
+    println!("🦀 lensbyacp Desktop running at {}", url);
     println!("☸️ Active Kubernetes Context: {}", initial_context);
 
-    // Automatically launch application window on Windows unless disabled
-    #[cfg(target_os = "windows")]
-    {
-        let no_browser = std::env::var("FREELENS_NO_BROWSER").is_ok()
-            || std::env::var("FREELENS_ELECTRON").is_ok()
-            || std::env::var("ELECTRON_RUN_AS_NODE").is_ok()
-            || std::env::args().any(|a| a == "--no-browser" || a == "-n");
-
-        if !no_browser {
-            let u = url.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
-                launch_desktop_app(&u).await;
-            });
-        } else {
-            println!("🖥️ Running in Electron / headless mode (external browser launch disabled)");
-        }
-    }
-
-    axum::serve(listener, app).await.unwrap();
-}
-
-#[cfg(target_os = "windows")]
-fn find_desktop_browser() -> Option<PathBuf> {
-    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    let program_files = std::env::var("ProgramFiles").unwrap_or_default();
-    let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
-
-    let candidates = [
-        // Edge (Standard Windows locations)
-        format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", program_files_x86),
-        format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", program_files),
-        format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", local_app_data),
-        // Chrome
-        format!("{}\\Google\\Chrome\\Application\\chrome.exe", program_files),
-        format!("{}\\Google\\Chrome\\Application\\chrome.exe", program_files_x86),
-        format!("{}\\Google\\Chrome\\Application\\chrome.exe", local_app_data),
-        // Brave
-        format!("{}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", program_files),
-        format!("{}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", program_files_x86),
-    ];
-
-    for path_str in &candidates {
-        if !path_str.is_empty() {
-            let path = PathBuf::from(path_str);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "windows")]
-async fn launch_desktop_app(url: &str) {
-    if let Some(browser_exe) = find_desktop_browser() {
-        let mut user_data = std::env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        user_data.push("FreelensApp");
-        user_data.push("profile");
-
-        let app_arg = format!("--app={}", url);
-        let data_arg = format!("--user-data-dir={}", user_data.display());
-
-        let child_res = Command::new(&browser_exe)
-            .args([
-                &app_arg,
-                &data_arg,
-                "--window-size=1440,900",
-                "--disable-features=Translate",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ])
-            .spawn();
-
-        if let Ok(mut child) = child_res {
-            // Keep server running; do not abruptly exit when the launcher helper delegates to Edge
-            tokio::spawn(async move {
-                let _ = child.wait().await;
-            });
-            return;
-        }
-    }
-
-    // Fallback: standard browser start
-    let u = url.to_string();
+    // Spawn high-speed Axum backend server in background Tokio task
     tokio::spawn(async move {
-        let mut cmd = Command::new("cmd");
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        let _ = cmd.args(["/c", "start", &u]).spawn();
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("❌ Axum server error: {}", e);
+        }
     });
+
+    let is_headless = std::env::var("FREELENS_HEADLESS").is_ok()
+        || std::env::var("FREELENS_NO_BROWSER").is_ok()
+        || std::env::args().any(|a| a == "--headless" || a == "-h" || a == "--server-only");
+
+    if is_headless {
+        println!("🖥️ Running in headless / server-only mode at {}", url);
+        let _ = tokio::signal::ctrl_c().await;
+        return;
+    }
+
+    // Launch native Tauri desktop application window
+    tauri::Builder::default()
+        .setup(move |app_handle| {
+            use tauri::Manager;
+            if let Some(win) = app_handle.get_webview_window("main") {
+                let dev_url = std::env::var("TAURI_DEV_URL").ok();
+                let target_url = dev_url.unwrap_or_else(|| format!("http://localhost:{}", active_port));
+                if let Ok(parsed) = target_url.parse() {
+                    let _ = win.navigate(parsed);
+                }
+            }
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running lensbyacp Tauri application");
 }
 

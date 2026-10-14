@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FileText, ShieldCheck, Eye, FileCode, Trash2, KeyRound } from 'lucide-react';
 import { ConfigMapItem, SecretItem } from '../types/k8s';
 import { SecretDetailModal } from '../components/SecretDetailModal';
+import { ConfigMapDetailModal } from '../components/ConfigMapDetailModal';
 
 interface ConfigViewProps {
   configMaps: ConfigMapItem[];
@@ -29,8 +30,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
   const isConfigMap = type === 'configmaps';
   const items = isConfigMap ? configMaps : secrets;
 
-  // Selected secret for the interactive detail & edit modal
+  // Selected item for interactive detail & edit modals
   const [selectedSecret, setSelectedSecret] = useState<SecretItem | null>(null);
+  const [selectedConfigMap, setSelectedConfigMap] = useState<ConfigMapItem | null>(null);
 
   const filtered = items.filter((item) => {
     const name = item.metadata.name.toLowerCase();
@@ -54,12 +56,12 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
             {filtered.length} of {items.length}
           </span>
         </div>
-        {!isConfigMap && (
-          <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-            Click any secret to view, decrypt/encrypt, and edit values
-          </span>
-        )}
+        <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+          {isConfigMap 
+            ? 'Click any ConfigMap to view, edit, and save configuration keys'
+            : 'Click any secret to view, decrypt/encrypt, and edit values'}
+        </span>
       </div>
 
       {/* Table */}
@@ -92,22 +94,22 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                   <tr 
                     key={item.metadata.uid || item.metadata.name} 
                     onClick={() => {
-                      if (!isConfigMap) {
+                      if (isConfigMap) {
+                        setSelectedConfigMap(item as ConfigMapItem);
+                      } else {
                         setSelectedSecret(item as SecretItem);
                       }
                     }}
-                    className={`transition-colors group ${
-                      !isConfigMap 
-                        ? 'hover:bg-slate-800/60 cursor-pointer' 
-                        : 'hover:bg-slate-800/40'
-                    }`}
-                    title={!isConfigMap ? 'Click to inspect, decrypt/encrypt and edit secret values' : undefined}
+                    className="hover:bg-slate-800/60 cursor-pointer transition-colors group"
+                    title={`Click to inspect and edit ${isConfigMap ? 'ConfigMap' : 'Secret'}`}
                   >
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
-                      {!isConfigMap && (
+                      {isConfigMap ? (
+                        <FileText className="w-3.5 h-3.5 text-cyan-400/70 group-hover:text-cyan-400 shrink-0 transition-colors" />
+                      ) : (
                         <KeyRound className="w-3.5 h-3.5 text-amber-400/70 group-hover:text-amber-400 shrink-0 transition-colors" />
                       )}
-                      <span className={`truncate max-w-sm ${!isConfigMap ? 'group-hover:text-cyan-300 transition-colors' : ''}`}>
+                      <span className="truncate max-w-sm group-hover:text-cyan-300 transition-colors">
                         {item.metadata.name}
                       </span>
                     </td>
@@ -116,27 +118,32 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
                         {item.metadata.namespace}
                       </span>
                     </td>
-                    <td className="py-2.5 px-4 text-cyan-400 font-semibold">{keysCount} keys</td>
+                    <td className="py-2.5 px-4 text-slate-200">
+                      <span className="bg-slate-900 border border-slate-700/60 text-cyan-300 px-2 py-0.5 rounded text-[11px]">
+                        {keysCount} {keysCount === 1 ? 'key' : 'keys'}
+                      </span>
+                    </td>
                     <td className="py-2.5 px-4 text-slate-400">{age}</td>
                     <td className="py-2.5 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1 select-none font-sans">
-                        {/* Quick View / Edit Values for Secrets */}
-                        {!isConfigMap && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSecret(item as SecretItem);
-                            }}
-                            title="Inspect & Edit Secret (Decrypt / Encrypt)"
-                            className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                      <div className="flex items-center justify-end gap-1 font-sans">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            onOpenManifest(isConfigMap ? 'configmap' : 'secret', item.metadata.name, item.metadata.namespace!);
+                            if (isConfigMap) {
+                              setSelectedConfigMap(item as ConfigMapItem);
+                            } else {
+                              setSelectedSecret(item as SecretItem);
+                            }
+                          }}
+                          title="Inspect Keys"
+                          className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenManifest(isConfigMap ? 'configmaps' : 'secrets', item.metadata.name, item.metadata.namespace!);
                           }}
                           title="View Manifest"
                           className="p-1 text-slate-400 hover:text-amber-300 hover:bg-slate-800 rounded transition-colors"
@@ -163,7 +170,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
         </table>
       </div>
 
-      {/* Interactive Secret Pop-up Modal */}
+      {/* Interactive Secret Modal */}
       <SecretDetailModal
         isOpen={!!selectedSecret}
         onClose={() => setSelectedSecret(null)}
@@ -172,6 +179,17 @@ export const ConfigView: React.FC<ConfigViewProps> = ({
         onSaveSuccess={() => {
           onRefresh?.();
         }}
+        onToast={onToast}
+      />
+
+      {/* Interactive ConfigMap Modal */}
+      <ConfigMapDetailModal
+        isOpen={!!selectedConfigMap}
+        onClose={() => setSelectedConfigMap(null)}
+        configMap={selectedConfigMap}
+        context={currentContext}
+        onRefreshList={onRefresh}
+        onOpenManifest={onOpenManifest}
         onToast={onToast}
       />
     </div>

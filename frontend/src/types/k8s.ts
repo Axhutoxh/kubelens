@@ -175,6 +175,7 @@ export interface NodeItem {
     conditions?: Array<{
       type: string;
       status: string;
+      reason?: string;
       message?: string;
     }>;
     capacity?: Record<string, string>;
@@ -284,3 +285,164 @@ export interface IngressItem {
     };
   };
 }
+
+export interface StatefulSetItem {
+  metadata: KubeMetadata;
+  spec: {
+    replicas: number;
+    serviceName?: string;
+    template?: {
+      metadata?: KubeMetadata;
+      spec?: {
+        containers?: ContainerDetail[];
+        initContainers?: ContainerDetail[];
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
+  status: {
+    replicas?: number;
+    readyReplicas?: number;
+    currentReplicas?: number;
+    updatedReplicas?: number;
+  };
+}
+
+export interface DaemonSetItem {
+  metadata: KubeMetadata;
+  spec: {
+    template?: {
+      metadata?: KubeMetadata;
+      spec?: {
+        nodeSelector?: Record<string, string>;
+        containers?: ContainerDetail[];
+        [key: string]: any;
+      };
+      [key: string]: any;
+    };
+    [key: string]: any;
+  };
+  status: {
+    desiredNumberScheduled?: number;
+    currentNumberScheduled?: number;
+    numberReady?: number;
+    updatedNumberScheduled?: number;
+    numberAvailable?: number;
+    numberMisscheduled?: number;
+  };
+}
+
+export interface JobCondition {
+  type: string;
+  status: string;
+  lastProbeTime?: string;
+  lastTransitionTime?: string;
+  reason?: string;
+  message?: string;
+}
+
+export interface JobItem {
+  metadata: KubeMetadata;
+  spec: {
+    completions?: number;
+    parallelism?: number;
+    backoffLimit?: number;
+    template?: {
+      spec?: {
+        containers?: ContainerDetail[];
+        restartPolicy?: string;
+        [key: string]: any;
+      };
+    };
+  };
+  status?: {
+    active?: number;
+    succeeded?: number;
+    failed?: number;
+    startTime?: string;
+    completionTime?: string;
+    conditions?: JobCondition[];
+  };
+}
+
+export interface CronJobItem {
+  metadata: KubeMetadata;
+  spec: {
+    schedule: string;
+    suspend?: boolean;
+    concurrencyPolicy?: string;
+    successfulJobsHistoryLimit?: number;
+    failedJobsHistoryLimit?: number;
+    jobTemplate?: {
+      spec?: JobItem['spec'];
+    };
+  };
+  status?: {
+    active?: Array<{ name: string; namespace?: string }>;
+    lastScheduleTime?: string;
+    lastSuccessfulTime?: string;
+  };
+}
+
+export interface PersistentVolumeClaimItem {
+  metadata: KubeMetadata;
+  spec: {
+    accessModes?: string[];
+    resources?: {
+      requests?: {
+        storage?: string;
+      };
+    };
+    volumeName?: string;
+    storageClassName?: string;
+    volumeMode?: string;
+  };
+  status?: {
+    phase?: string;
+    capacity?: {
+      storage?: string;
+    };
+    accessModes?: string[];
+  };
+}
+
+export interface PersistentVolumeItem {
+  metadata: KubeMetadata;
+  spec: {
+    capacity?: {
+      storage?: string;
+    };
+    accessModes?: string[];
+    claimRef?: {
+      namespace?: string;
+      name?: string;
+    };
+    persistentVolumeReclaimPolicy?: string;
+    storageClassName?: string;
+    volumeMode?: string;
+  };
+  status?: {
+    phase?: string;
+    reason?: string;
+    message?: string;
+  };
+}
+
+export interface StorageClassItem {
+  metadata: KubeMetadata;
+  provisioner: string;
+  reclaimPolicy?: string;
+  volumeBindingMode?: string;
+  allowVolumeExpansion?: boolean;
+  parameters?: Record<string, string>;
+}
+
+export interface NamespaceItem {
+  metadata: KubeMetadata;
+  status?: {
+    phase?: string;
+  };
+}
+

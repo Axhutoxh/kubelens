@@ -1,6 +1,7 @@
-import React from 'react';
-import { Cpu, CheckCircle2, AlertCircle, HardDrive } from 'lucide-react';
+import React, { useState } from 'react';
+import { Cpu, CheckCircle2, AlertCircle, HardDrive, FileCode } from 'lucide-react';
 import { NodeItem } from '../types/k8s';
+import { NodeDetailModal } from '../components/NodeDetailModal';
 
 interface NodesViewProps {
   nodes: NodeItem[];
@@ -13,6 +14,8 @@ export const NodesView: React.FC<NodesViewProps> = ({
   searchQuery,
   onOpenManifest,
 }) => {
+  const [selectedNode, setSelectedNode] = useState<NodeItem | null>(null);
+
   const filteredNodes = nodes.filter((n) => {
     const name = n.metadata.name.toLowerCase();
     const q = searchQuery.toLowerCase();
@@ -30,6 +33,10 @@ export const NodesView: React.FC<NodesViewProps> = ({
             {filteredNodes.length} of {nodes.length}
           </span>
         </div>
+        <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+          Click any node to view CPU/Memory allocatables, conditions, and taints
+        </span>
       </div>
 
       {/* Table */}
@@ -44,12 +51,13 @@ export const NodesView: React.FC<NodesViewProps> = ({
               <th className="py-2.5 px-4 font-semibold">OS / Arch</th>
               <th className="py-2.5 px-4 font-semibold">CPU</th>
               <th className="py-2.5 px-4 font-semibold">Memory</th>
+              <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredNodes.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={8} className="py-12 text-center text-slate-500 italic">
                   No nodes found.
                 </td>
               </tr>
@@ -60,13 +68,23 @@ export const NodesView: React.FC<NodesViewProps> = ({
                 const info = node.status.nodeInfo;
 
                 return (
-                  <tr key={node.metadata.name} className="hover:bg-slate-800/40 transition-colors">
+                  <tr 
+                    key={node.metadata.name} 
+                    onClick={() => setSelectedNode(node)}
+                    className="hover:bg-slate-800/60 cursor-pointer transition-colors group"
+                    title="Click to view node details"
+                  >
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
-                      <span className="truncate max-w-sm">{node.metadata.name}</span>
+                      <Cpu className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span className="truncate max-w-sm group-hover:text-cyan-300 transition-colors">
+                        {node.metadata.name}
+                      </span>
                     </td>
                     <td className="py-2.5 px-4">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 w-max ${
-                        isReady ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/80' : 'bg-rose-950 text-rose-400 border border-rose-800/80'
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 w-max ${
+                        isReady 
+                          ? 'bg-emerald-950 text-emerald-400 border-emerald-800/80' 
+                          : 'bg-rose-950 text-rose-400 border-rose-800/80'
                       }`}>
                         {isReady ? <CheckCircle2 className="w-2.5 h-2.5" /> : <AlertCircle className="w-2.5 h-2.5" />}
                         {isReady ? 'Ready' : 'NotReady'}
@@ -75,8 +93,22 @@ export const NodesView: React.FC<NodesViewProps> = ({
                     <td className="py-2.5 px-4 text-slate-300">{internalIp}</td>
                     <td className="py-2.5 px-4 text-slate-400">{info?.kubeletVersion || 'N/A'}</td>
                     <td className="py-2.5 px-4 text-slate-400">{info?.operatingSystem}/{info?.architecture}</td>
-                    <td className="py-2.5 px-4 text-slate-200">{node.status.capacity?.cpu || 'N/A'}</td>
+                    <td className="py-2.5 px-4 text-cyan-300">{node.status.capacity?.cpu || 'N/A'}</td>
                     <td className="py-2.5 px-4 text-slate-200">{node.status.capacity?.memory || 'N/A'}</td>
+                    <td className="py-2.5 px-4 text-right">
+                      <div className="flex items-center justify-end gap-1 font-sans">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenManifest('nodes', node.metadata.name);
+                          }}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                          title="View YAML Manifest"
+                        >
+                          <FileCode className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })
@@ -84,6 +116,13 @@ export const NodesView: React.FC<NodesViewProps> = ({
           </tbody>
         </table>
       </div>
+
+      <NodeDetailModal
+        isOpen={!!selectedNode}
+        node={selectedNode}
+        onClose={() => setSelectedNode(null)}
+        onOpenManifest={onOpenManifest}
+      />
     </div>
   );
 };

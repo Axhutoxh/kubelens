@@ -9,6 +9,11 @@ import { PodDetailModal } from './components/PodDetailModal';
 import { ClusterOverview } from './views/ClusterOverview';
 import { PodsView } from './views/PodsView';
 import { DeploymentsView } from './views/DeploymentsView';
+import { StatefulSetsView } from './views/StatefulSetsView';
+import { DaemonSetsView } from './views/DaemonSetsView';
+import { JobsView } from './views/JobsView';
+import { StorageView } from './views/StorageView';
+import { NamespacesView } from './views/NamespacesView';
 import { NodesView } from './views/NodesView';
 import { ServicesView } from './views/ServicesView';
 import { IngressesView } from './views/IngressesView';
@@ -22,6 +27,7 @@ import {
   fetchClusterOverview, 
   fetchK8sResource,
   getResourceManifest,
+  applyManifest,
   deleteResource,
   restartResource,
   fetchPortForwards
@@ -32,6 +38,13 @@ import {
   ClusterOverviewData, 
   PodItem, 
   DeploymentItem, 
+  StatefulSetItem,
+  DaemonSetItem,
+  JobItem,
+  CronJobItem,
+  PersistentVolumeClaimItem,
+  PersistentVolumeItem,
+  StorageClassItem,
   NodeItem, 
   ServiceItem, 
   EventItem,
@@ -74,6 +87,13 @@ export const App: React.FC = () => {
   const [overview, setOverview] = useState<ClusterOverviewData | null>(null);
   const [pods, setPods] = useState<PodItem[]>([]);
   const [deployments, setDeployments] = useState<DeploymentItem[]>([]);
+  const [statefulSets, setStatefulSets] = useState<StatefulSetItem[]>([]);
+  const [daemonSets, setDaemonSets] = useState<DaemonSetItem[]>([]);
+  const [jobs, setJobs] = useState<JobItem[]>([]);
+  const [cronJobs, setCronJobs] = useState<CronJobItem[]>([]);
+  const [pvcs, setPvcs] = useState<PersistentVolumeClaimItem[]>([]);
+  const [pvs, setPvs] = useState<PersistentVolumeItem[]>([]);
+  const [storageClasses, setStorageClasses] = useState<StorageClassItem[]>([]);
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -164,6 +184,21 @@ export const App: React.FC = () => {
       }
       if (currentView === 'deployments' || currentView === 'overview') {
         promises.push(fetchK8sResource<DeploymentItem>('deployments', ns).then((res) => setDeployments(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'statefulsets') {
+        promises.push(fetchK8sResource<StatefulSetItem>('statefulsets', ns).then((res) => setStatefulSets(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'daemonsets') {
+        promises.push(fetchK8sResource<DaemonSetItem>('daemonsets', ns).then((res) => setDaemonSets(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'jobs') {
+        promises.push(fetchK8sResource<JobItem>('jobs', ns).then((res) => setJobs(res.items || [])).catch(() => {}));
+        promises.push(fetchK8sResource<CronJobItem>('cronjobs', ns).then((res) => setCronJobs(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'storage') {
+        promises.push(fetchK8sResource<PersistentVolumeClaimItem>('persistentvolumeclaims', ns).then((res) => setPvcs(res.items || [])).catch(() => {}));
+        promises.push(fetchK8sResource<PersistentVolumeItem>('persistentvolumes').then((res) => setPvs(res.items || [])).catch(() => {}));
+        promises.push(fetchK8sResource<StorageClassItem>('storageclasses').then((res) => setStorageClasses(res.items || [])).catch(() => {}));
       }
       if (currentView === 'services' || currentView === 'overview') {
         promises.push(fetchK8sResource<ServiceItem>('services', ns).then((res) => setServices(res.items || [])).catch(() => {}));
@@ -418,6 +453,83 @@ export const App: React.FC = () => {
             />
           )}
 
+          {currentView === 'statefulsets' && (
+            <StatefulSetsView
+              statefulSets={statefulSets}
+              searchQuery={searchQuery}
+              onScale={setScaleTarget}
+              onRestart={handleRestartResource}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'daemonsets' && (
+            <DaemonSetsView
+              daemonSets={daemonSets}
+              searchQuery={searchQuery}
+              onRestart={handleRestartResource}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'jobs' && (
+            <JobsView
+              jobs={jobs}
+              cronJobs={cronJobs}
+              searchQuery={searchQuery}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+              onTriggerCronJob={async (cj) => {
+                try {
+                  const jobName = `${cj.metadata.name}-manual-${Date.now().toString().slice(-4)}`;
+                  const templateSpec = cj.spec?.jobTemplate?.spec?.template;
+                  const manifestObj = {
+                    apiVersion: 'batch/v1',
+                    kind: 'Job',
+                    metadata: {
+                      name: jobName,
+                      namespace: cj.metadata.namespace || 'default',
+                    },
+                    spec: {
+                      template: templateSpec || {},
+                    },
+                  };
+                  await applyManifest(JSON.stringify(manifestObj), currentContext);
+                  showToast(`Job "${jobName}" triggered successfully`);
+                  loadResources();
+                } catch (e: any) {
+                  showToast(e.message || 'Failed to trigger Job', 'error');
+                }
+              }}
+            />
+          )}
+
+          {currentView === 'storage' && (
+            <StorageView
+              pvcs={pvcs}
+              pvs={pvs}
+              storageClasses={storageClasses}
+              searchQuery={searchQuery}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
+          {currentView === 'namespaces' && (
+            <NamespacesView
+              namespaces={namespaces}
+              searchQuery={searchQuery}
+              selectedNamespace={selectedNamespace}
+              onSelectNamespace={setSelectedNamespace}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+              onRefresh={loadResources}
+              onToast={showToast}
+            />
+          )}
+
           {currentView === 'nodes' && (
             <NodesView
               nodes={nodes}
@@ -486,18 +598,6 @@ export const App: React.FC = () => {
             />
           )}
 
-          {currentView === 'namespaces' && (
-            <div className="p-6">
-              <h2 className="text-sm font-semibold mb-3">Cluster Namespaces</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {namespaces.map((ns) => (
-                  <div key={ns} className="bg-slate-900 border border-slate-800 p-3 rounded-lg text-xs font-mono text-cyan-300">
-                    {ns}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </main>
 
         {/* Bottom Dock (Multi-Task: Logs & YAML Editor with per-task close button) */}
@@ -527,8 +627,9 @@ export const App: React.FC = () => {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-slate-500 font-mono text-[10px]">lensbyacp</span>
+          <div className="flex items-center gap-2">
+            <img src="/logo.png" alt="Kubellens" className="w-3.5 h-3.5 rounded-sm object-contain" />
+            <span className="text-slate-400 font-mono text-[10px] font-semibold">KUBELLENS</span>
             <span className="text-slate-700">•</span>
             <span className="text-cyan-400 font-semibold flex items-center gap-1">
               <span>developed by Ashutosh</span>

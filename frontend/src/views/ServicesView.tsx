@@ -1,5 +1,5 @@
 import React from 'react';
-import { Network, ExternalLink, Globe } from 'lucide-react';
+import { Network, FileCode, Trash2 } from 'lucide-react';
 import { ServiceItem } from '../types/k8s';
 
 interface ServicesViewProps {
@@ -33,6 +33,10 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
             {filtered.length} of {services.length}
           </span>
         </div>
+        <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+          Internal network endpoints, load balancing & cluster IPs
+        </span>
       </div>
 
       {/* Table */}
@@ -46,12 +50,13 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
               <th className="py-2.5 px-4 font-semibold">Cluster IP</th>
               <th className="py-2.5 px-4 font-semibold">Ports</th>
               <th className="py-2.5 px-4 font-semibold">External IP</th>
+              <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={7} className="py-12 text-center text-slate-500 italic">
                   No services found.
                 </td>
               </tr>
@@ -63,6 +68,7 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
                 return (
                   <tr key={svc.metadata.uid || svc.metadata.name} className="hover:bg-slate-800/40 transition-colors">
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
+                      <Network className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                       <span className="truncate max-w-xs">{svc.metadata.name}</span>
                     </td>
                     <td className="py-2.5 px-4 text-slate-400">
@@ -78,6 +84,24 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
                     <td className="py-2.5 px-4 text-slate-300">{svc.spec.clusterIP || 'None'}</td>
                     <td className="py-2.5 px-4 text-slate-300">{ports}</td>
                     <td className="py-2.5 px-4 text-slate-400">{extIp}</td>
+                    <td className="py-2.5 px-4 text-right">
+                      <div className="flex items-center justify-end gap-1 font-sans">
+                        <button
+                          onClick={() => onOpenManifest('services', svc.metadata.name, svc.metadata.namespace || 'default')}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                          title="View YAML Manifest"
+                        >
+                          <FileCode className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => onDelete('service', svc.metadata.name, svc.metadata.namespace || 'default')}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+                          title="Delete Service"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })

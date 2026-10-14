@@ -81,6 +81,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
         isCollapsed ? 'w-16' : 'w-64'
       }`}
     >
+      {/* Brand Header */}
+      <div className="p-3 border-b border-slate-800 bg-slate-950/80 flex items-center justify-between">
+        {!isCollapsed ? (
+          <div className="flex items-center gap-2.5 min-w-0">
+            <img 
+              src="/logo.png" 
+              alt="Kubellens" 
+              className="w-8 h-8 rounded-lg shadow-md shadow-cyan-500/20 shrink-0 object-contain bg-slate-900 p-0.5 border border-cyan-800/40"
+            />
+            <div className="flex flex-col min-w-0">
+              <span className="font-bold text-slate-100 text-sm tracking-tight truncate font-sans">
+                KUBELLENS
+              </span>
+              <span className="text-[9px] text-cyan-400 font-semibold tracking-wider uppercase font-mono">
+                Lens by ACP
+              </span>
+            </div>
+          </div>
+        ) : (
+          <img 
+            src="/logo.png" 
+            alt="Kubellens" 
+            className="w-8 h-8 rounded-lg shadow-md shadow-cyan-500/20 mx-auto shrink-0 object-contain bg-slate-900 p-0.5 border border-cyan-800/40 cursor-pointer"
+            title="KUBELLENS • Lens by ACP"
+            onClick={onToggleCollapse}
+          />
+        )}
+        {onToggleCollapse && !isCollapsed && (
+          <button
+            onClick={onToggleCollapse}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800/80 transition-colors cursor-pointer ml-auto"
+            title="Collapse Sidebar"
+            aria-label="Collapse Sidebar"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
       {/* Cluster / Context Selector Header */}
       <div className="p-3 border-b border-slate-800 bg-slate-900/50">
         <div className="flex items-center justify-between mb-1.5">
@@ -90,20 +129,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             </label>
           )}
-          {onToggleCollapse && (
+          {onToggleCollapse && isCollapsed && (
             <button
               onClick={onToggleCollapse}
-              className={`p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800/80 transition-colors cursor-pointer ${
-                isCollapsed ? 'mx-auto' : 'ml-auto'
-              }`}
-              title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
-              aria-label={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800/80 transition-colors cursor-pointer mx-auto"
+              title="Expand Sidebar"
+              aria-label="Expand Sidebar"
             >
-              {isCollapsed ? (
-                <PanelLeftOpen className="w-4 h-4 text-cyan-400" />
-              ) : (
-                <PanelLeftClose className="w-4 h-4" />
-              )}
+              <PanelLeftOpen className="w-4 h-4 text-cyan-400" />
             </button>
           )}
         </div>
@@ -181,7 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {!isCollapsed ? (
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between">
-              <span className="font-mono text-cyan-400/90 font-bold tracking-tight">⚡ lensbyacp</span>
+              <span className="font-mono text-cyan-400/90 font-bold tracking-tight">KUBELLENS</span>
               <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
                 v1.0.1 Native
               </span>
@@ -191,9 +224,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
         ) : (
-          <span className="block text-center font-mono text-cyan-400 font-bold" title="lensbyacp • Developed by Ashutosh Chandra">
-            ⚡
-          </span>
+          <img 
+            src="/logo.png" 
+            alt="Kubellens" 
+            className="w-5 h-5 mx-auto opacity-80 hover:opacity-100 transition-opacity" 
+            title="KUBELLENS • Developed by Ashutosh Chandra"
+          />
         )}
       </div>
     </div>
