@@ -36,6 +36,9 @@ for /f "delims=" %%F in ('dir /b /o-d "%ROOT%\target\release\bundle\nsis\*-setup
     goto :copied
 )
 :copied
+rem Keep the installer behind the website's download button in sync with this build
+if not exist "%ROOT%\docs\downloads" mkdir "%ROOT%\docs\downloads"
+copy /y "%OUT%\kubellens-setup.exe" "%ROOT%\docs\downloads\kubellens-setup.exe"
 
 echo.
 echo ===================================================

@@ -35,8 +35,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "WebView2Loader.dll"
-    ]
+    "shortDescription": "Native Kubernetes IDE",
+    "longDescription": "Kubellens is a fast, native Kubernetes desktop IDE built with Rust, Tauri, Tokio and React.",
+    "category": "DeveloperTool",
+    "publisher": "Ashutosh Chandra",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }
