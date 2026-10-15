@@ -7,6 +7,8 @@
 # Packaged binaries (produced by scripts/build.bat)
 /release
 *.exe
+# ...except the Windows installer served by the GitHub Pages download button
+!/docs/downloads/kubellens-setup.exe
 
 # Frontend
 node_modules/

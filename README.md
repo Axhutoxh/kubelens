@@ -78,6 +78,28 @@ This produces in `release/`:
 * **`kubellens-setup.exe`**: Windows Setup Wizard installer (NSIS) with Start Menu / Desktop shortcuts and an uninstaller.
 * **`kubellens.exe`**: Standalone portable executable.
 
+It also refreshes `docs/downloads/kubellens-setup.exe`, the installer served by the website's Windows download button. Commit it with the release.
+
+On **macOS / Linux**, build locally with:
+```bash
+cd frontend && bun install && cd ..
+bun x @tauri-apps/cli build          # Linux needs libwebkit2gtk-4.1-dev first
+```
+
+### Releasing for Windows, macOS and Linux
+
+Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
+```bash
+git tag v1.0.2 && git push origin v1.0.2
+```
+| Platform | Release asset |
+| :--- | :--- |
+| Windows | `kubellens-setup.exe`, `kubellens.exe` (portable) |
+| macOS (Apple Silicon + Intel) | `kubellens-macos-universal.dmg` |
+| Linux | `kubellens-linux-amd64.AppImage`, `kubellens-linux-amd64.deb`, `kubellens-linux-x86_64.rpm` |
+
+The website links to `releases/latest/download/<asset>`, so new releases show up there automatically.
+
 ### 4. Project Website (GitHub Pages)
 
 The showcase site lives in [`docs/`](docs/index.html) and is plain HTML — open it in a browser to preview.

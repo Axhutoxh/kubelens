@@ -1138,8 +1138,43 @@ async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
     (StatusCode::NOT_FOUND, "lensbyacp: UI assets not found").into_response()
 }
 
+/// Apps started from Finder / a Linux desktop launcher inherit a minimal PATH that lacks
+/// Homebrew and user bin dirs, so kubectl and its auth plugins (gke-gcloud-auth-plugin,
+/// kubelogin, aws, ...) would not be found. Append the usual install locations.
+#[cfg(not(target_os = "windows"))]
+fn extend_path_for_gui_launch() {
+    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut extra = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/snap/bin"),
+    ];
+    if let Some(h) = &home {
+        extra.push(h.join(".local/bin"));
+        extra.push(h.join("bin"));
+        extra.push(h.join(".krew/bin"));
+        extra.push(h.join("google-cloud-sdk/bin"));
+    }
+    for dir in extra {
+        if dir.is_dir() && !paths.contains(&dir) {
+            paths.push(dir);
+        }
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    #[cfg(not(target_os = "windows"))]
+    extend_path_for_gui_launch();
+
     let state = AppState {
         current_context: Arc::new(RwLock::new(String::new())),
         context_init: Arc::new(OnceCell::new()),
