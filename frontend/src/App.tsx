@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, NAV_SECTIONS } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { Dock, DockTask } from './components/Dock';
 import { CreateResourceModal } from './components/CreateResourceModal';
 import { ScaleModal } from './components/ScaleModal';
 import { ViewLoader } from './components/ViewLoader';
+import { CommandPalette } from './components/CommandPalette';
 
 // Views and the (large) pod detail modal are split into their own chunks and only
 // downloaded/parsed when first opened, which keeps startup work small.
@@ -23,6 +24,13 @@ const IngressesView = lazy(() => import('./views/IngressesView').then((m) => ({ 
 const ConfigView = lazy(() => import('./views/ConfigView').then((m) => ({ default: m.ConfigView })));
 const EventsView = lazy(() => import('./views/EventsView').then((m) => ({ default: m.EventsView })));
 const SmartLensStudio = lazy(() => import('./views/SmartLensStudio').then((m) => ({ default: m.SmartLensStudio })));
+const HelmView = lazy(() => import('./views/HelmView').then((m) => ({ default: m.HelmView })));
+const CustomResourcesView = lazy(() => import('./views/CustomResourcesView').then((m) => ({ default: m.CustomResourcesView })));
+
+// Views that fetch their own data (and show their own loading state)
+const SELF_LOADING_VIEWS = new Set(['smart-lens-studio', 'helm', 'crds']);
+
+const PALETTE_VIEWS = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ id: i.id, label: i.label.replace(/^⚡\s*/, '') })));
 
 const VIEW_LABELS: Record<string, string> = {
   overview: 'cluster overview',
@@ -39,6 +47,8 @@ const VIEW_LABELS: Record<string, string> = {
   configmaps: 'config maps',
   secrets: 'secrets',
   events: 'events',
+  helm: 'Helm releases',
+  crds: 'custom resources',
 };
 
 const POLL_INTERVAL_MS = 10000;
@@ -53,7 +63,12 @@ import {
   applyManifest,
   deleteResource,
   restartResource,
-  fetchPortForwards
+  fetchPortForwards,
+  fetchPodMetrics,
+  fetchNodeMetrics,
+  nodeAction,
+  PodMetric,
+  NodeMetric
 } from './api/client';
 
 import { 
@@ -123,6 +138,15 @@ export const App: React.FC = () => {
   const [configMaps, setConfigMaps] = useState<ConfigMapItem[]>([]);
   const [secrets, setSecrets] = useState<SecretItem[]>([]);
   const [ingresses, setIngresses] = useState<IngressItem[]>([]);
+
+  // Live usage from metrics-server (keyed `${namespace}/${name}` for pods, name for nodes)
+  const [podMetrics, setPodMetrics] = useState<Map<string, PodMetric>>(() => new Map());
+  const [nodeMetrics, setNodeMetrics] = useState<Map<string, NodeMetric>>(() => new Map());
+  const [metricsAvailable, setMetricsAvailable] = useState<boolean | undefined>(undefined);
+
+  // Bumped by the refresh button so self-loading views (Helm, CRDs) reload too
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
 
   // Dock & Multi-Task State
   const [isDockOpen, setIsDockOpen] = useState(false);
@@ -216,8 +240,21 @@ export const App: React.FC = () => {
       if (currentView === 'pods' || currentView === 'overview') {
         promises.push(fetchK8sResource<PodItem>('pods', ns).then((res) => setPods(res.items || [])).catch(() => {}));
       }
+      if (currentView === 'pods' || currentView === 'deployments') {
+        // Metrics never block the table: they arrive separately and fail soft
+        fetchPodMetrics(ns).then((m) => {
+          setMetricsAvailable(m.available);
+          setPodMetrics(new Map((m.items || []).map((x) => [`${x.namespace}/${x.name}`, x])));
+        }).catch(() => {});
+      }
       if (currentView === 'nodes' || currentView === 'overview') {
         promises.push(fetchK8sResource<NodeItem>('nodes').then((res) => setNodes(res.items || [])).catch(() => {}));
+      }
+      if (currentView === 'nodes') {
+        fetchNodeMetrics().then((m) => {
+          setMetricsAvailable(m.available);
+          setNodeMetrics(new Map((m.items || []).map((x) => [x.name, x])));
+        }).catch(() => {});
       }
       if (currentView === 'events' || currentView === 'overview') {
         promises.push(fetchK8sResource<EventItem>('events', ns).then((res) => setEvents(res.items || [])).catch(() => {}));
@@ -367,6 +404,83 @@ export const App: React.FC = () => {
     }
   };
 
+  // Open an interactive shell in a pod (one tab per pod; reopening focuses it)
+  const handleOpenShell = (pod: string, namespace: string, containers: string[], context?: string) => {
+    const taskId = `shell-${context || 'default'}-${namespace}-${pod}`;
+    setDockTasks((prev) => prev.some((t) => t.id === taskId) ? prev : [
+      ...prev,
+      {
+        id: taskId,
+        type: 'shell',
+        title: `Shell (${pod})${context ? ` [${context}]` : ''}`,
+        pod,
+        namespace,
+        containers,
+        container: containers[0] || '',
+        context,
+        sessionKey: 0,
+      },
+    ]);
+    setActiveDockTaskId(taskId);
+    setIsDockOpen(true);
+  };
+
+  // Combined log stream for several pods, or every pod matching a label selector
+  const handleOpenMultiLogs = (opts: { targets?: Array<{ name: string; namespace: string }>; selector?: string; namespace?: string; title: string }) => {
+    const taskId = opts.selector
+      ? `multilogs-${opts.namespace}-${opts.selector}`
+      : `multilogs-${opts.targets!.map((t) => `${t.namespace}/${t.name}`).sort().join(',')}`;
+    setDockTasks((prev) => prev.some((t) => t.id === taskId) ? prev : [
+      ...prev,
+      { id: taskId, type: 'multilogs', title: opts.title, targets: opts.targets, selector: opts.selector, namespace: opts.namespace },
+    ]);
+    setActiveDockTaskId(taskId);
+    setIsDockOpen(true);
+  };
+
+  const handleUpdateDockTask = (id: string, patch: Partial<DockTask>) => {
+    setDockTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  };
+
+  // Delete many pods at once (one confirmation, parallel requests, one summary toast)
+  const handleBulkDeletePods = async (targets: Array<{ name: string; namespace: string }>) => {
+    const preview = targets.slice(0, 8).map((t) => `  • ${t.namespace}/${t.name}`).join('\n');
+    const more = targets.length > 8 ? `\n  …and ${targets.length - 8} more` : '';
+    if (!window.confirm(`Delete ${targets.length} pods?\n\n${preview}${more}`)) return;
+    setIsRefreshing(true);
+    const results = await Promise.allSettled(targets.map((t) => deleteResource('pod', t.name, t.namespace)));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    if (failed === 0) showToast(`Deleted ${targets.length} pods`);
+    else showToast(`Deleted ${targets.length - failed} of ${targets.length} pods (${failed} failed)`, 'error');
+    loadResources();
+  };
+
+  const handleNodeAction = async (node: string, action: 'cordon' | 'uncordon' | 'drain', force = false) => {
+    try {
+      if (action === 'drain') showToast(`Draining ${node}… this can take a minute`);
+      await nodeAction(node, action, force);
+      showToast(`${action[0].toUpperCase()}${action.slice(1)}ed ${node}`);
+      loadResources();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  // Ctrl+K / Ctrl+Shift+P opens the command palette from anywhere
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if ((mod && e.key.toLowerCase() === 'k') || (mod && e.shiftKey && e.key.toLowerCase() === 'p')) {
+        // Let a focused terminal keep Ctrl+K (clear line) unless the palette is already open
+        if ((e.target as HTMLElement)?.closest?.('.xterm') && !isPaletteOpen) return;
+        e.preventDefault();
+        setIsPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isPaletteOpen]);
+
   // Close specific dock task / process individually
   const handleCloseDockTask = (taskId: string) => {
     setDockTasks((prev) => {
@@ -442,6 +556,7 @@ export const App: React.FC = () => {
           onSearchChange={setSearchQuery}
           onRefresh={() => {
             loadResources();
+            setRefreshTick((t) => t + 1);
             loadPortForwards();
           }}
           isRefreshing={isRefreshing}
@@ -464,7 +579,7 @@ export const App: React.FC = () => {
         {/* View Routing */}
         <main className="flex-1 overflow-hidden relative bg-slate-950/60">
           <Suspense fallback={<ViewLoader label={`Loading ${VIEW_LABELS[currentView] || 'view'}…`} />}>
-          {currentView !== 'smart-lens-studio' && !loadedViews.has(viewKey) ? (
+          {!SELF_LOADING_VIEWS.has(currentView) && !loadedViews.has(viewKey) ? (
             <ViewLoader label={`Fetching ${VIEW_LABELS[currentView] || 'resources'} from ${currentContext || 'cluster'}…`} />
           ) : (
           <>
@@ -489,8 +604,14 @@ export const App: React.FC = () => {
                 setSelectedPodTab('overview');
               }}
               onOpenLogs={handleOpenLogs}
+              onOpenShell={(pod, ns, containers) => handleOpenShell(pod, ns, containers)}
+              onOpenMultiLogs={(targets) => handleOpenMultiLogs({ targets, title: `Logs (${targets.length} pods)` })}
+              onBulkDelete={handleBulkDeletePods}
+              podMetrics={podMetrics}
+              metricsAvailable={metricsAvailable}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+              onToast={showToast}
             />
           )}
 
@@ -507,6 +628,19 @@ export const App: React.FC = () => {
               onRestart={handleRestartResource}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+              onOpenAllLogs={(dep) => {
+                const labels: Record<string, string> = dep.spec.selector?.matchLabels || {};
+                const selector = Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(',');
+                if (!selector) {
+                  showToast('This deployment has no matchLabels selector', 'error');
+                  return;
+                }
+                handleOpenMultiLogs({ selector, namespace: dep.metadata.namespace || 'default', title: `Logs (${dep.metadata.name}, all pods)` });
+              }}
+              onRefresh={() => loadResources()}
+              podMetrics={podMetrics}
+              metricsAvailable={metricsAvailable}
+              onToast={showToast}
             />
           )}
 
@@ -592,6 +726,9 @@ export const App: React.FC = () => {
               nodes={nodes}
               searchQuery={searchQuery}
               onOpenManifest={handleOpenManifest}
+              nodeMetrics={nodeMetrics}
+              metricsAvailable={metricsAvailable}
+              onNodeAction={handleNodeAction}
             />
           )}
 
@@ -637,6 +774,27 @@ export const App: React.FC = () => {
             />
           )}
 
+          {currentView === 'helm' && (
+            <HelmView
+              namespace={selectedNamespace}
+              currentContext={currentContext}
+              searchQuery={searchQuery}
+              refreshTick={refreshTick}
+              onToast={showToast}
+            />
+          )}
+
+          {currentView === 'crds' && (
+            <CustomResourcesView
+              namespace={selectedNamespace}
+              currentContext={currentContext}
+              searchQuery={searchQuery}
+              refreshTick={refreshTick}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
           {currentView === 'smart-lens-studio' && (
             <SmartLensStudio
               contexts={contexts}
@@ -667,6 +825,7 @@ export const App: React.FC = () => {
           activeTaskId={activeDockTaskId}
           onSelectTask={setActiveDockTaskId}
           onCloseTask={handleCloseDockTask}
+          onUpdateTask={handleUpdateDockTask}
         />
 
         {/* Bottom Status Bar */}
@@ -679,6 +838,13 @@ export const App: React.FC = () => {
             {selectedNamespace !== '_all' && (
               <span className="text-slate-500">• Namespace: <span className="text-slate-300 font-mono">{selectedNamespace}</span></span>
             )}
+            <button
+              onClick={() => setIsPaletteOpen(true)}
+              className="text-slate-500 hover:text-cyan-300 transition-colors"
+              title="Command palette"
+            >
+              <kbd className="font-mono text-[10px] border border-slate-700 rounded px-1">Ctrl K</kbd> search everything
+            </button>
             {isRefreshing && (
               <span className="flex items-center gap-1 text-cyan-400 text-[10px] animate-pulse">
                 <span className="w-1 h-1 rounded-full bg-cyan-400" />
@@ -696,6 +862,34 @@ export const App: React.FC = () => {
           </div>
         </footer>
       </div>
+
+      <CommandPalette
+        isOpen={isPaletteOpen}
+        onClose={() => setIsPaletteOpen(false)}
+        views={PALETTE_VIEWS}
+        contexts={contexts.map((c) => c.name)}
+        currentContext={currentContext}
+        namespaces={namespaces}
+        selectedNamespace={selectedNamespace}
+        onNavigate={(view, search) => {
+          setCurrentView(view);
+          if (search !== undefined) setSearchQuery(search);
+        }}
+        onSwitchContext={handleSwitchContext}
+        onSelectNamespace={setSelectedNamespace}
+        onOpenPod={(pod) => {
+          setSelectedPod(pod);
+          setSelectedPodContext(undefined);
+          setSelectedPodTab('overview');
+        }}
+        actions={[
+          { id: 'refresh', label: 'Refresh cluster data', run: () => { loadResources(); setRefreshTick((t) => t + 1); } },
+          { id: 'create', label: 'Create resource from YAML', run: () => setIsCreateModalOpen(true) },
+          { id: 'dock', label: isDockOpen ? 'Hide bottom panel' : 'Show bottom panel', run: () => setIsDockOpen(!isDockOpen) },
+          { id: 'sidebar', label: isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', run: toggleSidebar },
+          { id: 'clear-search', label: 'Clear search filter', run: () => setSearchQuery('') },
+        ]}
+      />
 
       {/* Modals */}
       <CreateResourceModal

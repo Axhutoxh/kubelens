@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
     http::{header, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -324,15 +327,19 @@ struct SetEnvRequest {
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn create_kubectl_cmd() -> Command {
-    let mut cmd = Command::new("kubectl");
+fn create_cli_cmd(program: &str) -> Command {
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    // Timed-out commands and closed log streams must not leave kubectl processes behind
+    // Timed-out commands and closed log streams must not leave child processes behind
     cmd.kill_on_drop(true);
     cmd
+}
+
+fn create_kubectl_cmd() -> Command {
+    create_cli_cmd("kubectl")
 }
 
 fn create_kubectl_std_cmd() -> std::process::Command {
@@ -359,16 +366,22 @@ async fn get_current_context() -> String {
     }
 }
 
-async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, String> {
-    let mut cmd = create_kubectl_cmd();
+/// Runs a cluster CLI (kubectl or helm) against `current_ctx` and returns stdout.
+/// `context_flag` differs per tool: kubectl uses `--context`, helm `--kube-context`.
+async fn run_cli(
+    program: &str,
+    context_flag: &str,
+    args: &[&str],
+    current_ctx: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let mut cmd = create_cli_cmd(program);
     if !current_ctx.is_empty() {
-        cmd.arg("--context").arg(current_ctx);
+        cmd.arg(context_flag).arg(current_ctx);
     }
-    for arg in args {
-        cmd.arg(arg);
-    }
+    cmd.args(args);
 
-    let res = tokio::time::timeout(tokio::time::Duration::from_secs(15), cmd.output()).await;
+    let res = tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), cmd.output()).await;
     match res {
         Ok(Ok(output)) => {
             if output.status.success() {
@@ -377,12 +390,23 @@ async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, Str
                 Err(String::from_utf8_lossy(&output.stderr).to_string())
             }
         }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("`{}` was not found on PATH. Install it to use this feature.", program))
+        }
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err(format!(
-            "Command timed out after 15s (context: '{}'). Cluster may be unreachable or requires auth.",
-            current_ctx
+            "Command timed out after {}s (context: '{}'). Cluster may be unreachable or requires auth.",
+            timeout_secs, current_ctx
         )),
     }
+}
+
+async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, String> {
+    run_cli("kubectl", "--context", args, current_ctx, 15).await
+}
+
+async fn run_helm(args: &[&str], current_ctx: &str, timeout_secs: u64) -> Result<String, String> {
+    run_cli("helm", "--kube-context", args, current_ctx, timeout_secs).await
 }
 
 // Handlers
@@ -713,7 +737,7 @@ async fn handle_pod_logs(
         }
     };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(5))))
 }
 
 fn current_time_str() -> String {
@@ -1074,6 +1098,601 @@ async fn handle_list_port_forwards(State(state): State<AppState>) -> impl IntoRe
     Json(serde_json::json!({ "sessions": list }))
 }
 
+// ---------------------------------------------------------------------------
+// Metrics (kubectl top). Requires metrics-server; reports `available: false` otherwise.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MetricsQuery {
+    namespace: Option<String>,
+    context: Option<String>,
+}
+
+async fn handle_pod_metrics(
+    Query(q): Query<MetricsQuery>,
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
+    let ns = q.namespace.filter(|n| !n.is_empty() && n != "_all");
+    let cache_key = format!("metrics:pods:{}:{}", ctx_to_use, ns.as_deref().unwrap_or("_all"));
+
+    let mut args = vec!["top".to_string(), "pods".to_string(), "--no-headers".to_string()];
+    match &ns {
+        Some(n) => {
+            args.push("-n".to_string());
+            args.push(n.clone());
+        }
+        None => args.push("-A".to_string()),
+    }
+
+    match state.cache.fetch(cache_key, 10, args, ctx_to_use).await {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out);
+            let items: Vec<serde_json::Value> = text
+                .lines()
+                .filter_map(|line| {
+                    let cols: Vec<&str> = line.split_whitespace().collect();
+                    // -A adds a leading NAMESPACE column
+                    let (namespace, rest) = match &ns {
+                        Some(n) => (n.as_str(), &cols[..]),
+                        None if cols.len() >= 4 => (cols[0], &cols[1..]),
+                        None => return None,
+                    };
+                    if rest.len() < 3 {
+                        return None;
+                    }
+                    Some(serde_json::json!({
+                        "namespace": namespace,
+                        "name": rest[0],
+                        "cpu": rest[1],
+                        "memory": rest[2],
+                    }))
+                })
+                .collect();
+            Json(serde_json::json!({ "available": true, "items": items }))
+        }
+        Err(e) => Json(serde_json::json!({ "available": false, "error": e.trim() })),
+    }
+}
+
+async fn handle_node_metrics(
+    Query(q): Query<MetricsQuery>,
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
+    let cache_key = format!("metrics:nodes:{}", ctx_to_use);
+    let args = vec!["top".to_string(), "nodes".to_string(), "--no-headers".to_string()];
+
+    match state.cache.fetch(cache_key, 10, args, ctx_to_use).await {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out);
+            let items: Vec<serde_json::Value> = text
+                .lines()
+                .filter_map(|line| {
+                    let c: Vec<&str> = line.split_whitespace().collect();
+                    if c.len() < 5 {
+                        return None;
+                    }
+                    let pct = |s: &str| s.trim_end_matches('%').parse::<f64>().ok();
+                    Some(serde_json::json!({
+                        "name": c[0],
+                        "cpu": c[1],
+                        "cpuPercent": pct(c[2]),
+                        "memory": c[3],
+                        "memoryPercent": pct(c[4]),
+                    }))
+                })
+                .collect();
+            Json(serde_json::json!({ "available": true, "items": items }))
+        }
+        Err(e) => Json(serde_json::json!({ "available": false, "error": e.trim() })),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rollout undo (roll a Deployment back to a revision)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct RolloutUndoRequest {
+    kind: String,
+    name: String,
+    namespace: String,
+    revision: Option<i64>,
+    context: Option<String>,
+}
+
+async fn handle_rollout_undo(
+    State(state): State<AppState>,
+    Json(req): Json<RolloutUndoRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let target = format!("{}/{}", req.kind, req.name);
+    let mut args = vec!["rollout".to_string(), "undo".to_string(), target, "-n".to_string(), req.namespace.clone()];
+    if let Some(rev) = req.revision {
+        args.push(format!("--to-revision={}", rev));
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let out = run_kubectl_cmd(&arg_refs, ctx_to_use)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    state.cache.invalidate_prefix(&format!("k8s:{}:", ctx_to_use)).await;
+    state.cache.invalidate_prefix(&format!("detail:{}", ctx_to_use)).await;
+
+    Ok(Json(serde_json::json!({ "success": true, "output": out })))
+}
+
+// ---------------------------------------------------------------------------
+// Node maintenance: cordon / uncordon / drain
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct NodeActionRequest {
+    node: String,
+    action: String,
+    #[serde(default)]
+    force: bool,
+    context: Option<String>,
+}
+
+async fn handle_node_action(
+    State(state): State<AppState>,
+    Json(req): Json<NodeActionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+
+    let out = match req.action.as_str() {
+        "cordon" | "uncordon" => run_kubectl_cmd(&[req.action.as_str(), &req.node], ctx_to_use).await,
+        "drain" => {
+            let mut args = vec![
+                "drain",
+                req.node.as_str(),
+                "--ignore-daemonsets",
+                "--delete-emptydir-data",
+                "--timeout=110s",
+            ];
+            // --force also evicts pods without a controller; they will not be recreated
+            if req.force {
+                args.push("--force");
+            }
+            run_cli("kubectl", "--context", &args, ctx_to_use, 120).await
+        }
+        other => return Err((StatusCode::BAD_REQUEST, format!("Unknown node action '{}'", other))),
+    }
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    state.cache.invalidate_prefix(&format!("k8s:{}:", ctx_to_use)).await;
+    state.cache.invalidate_prefix(&format!("overview:{}", ctx_to_use)).await;
+
+    Ok(Json(serde_json::json!({ "success": true, "output": out })))
+}
+
+// ---------------------------------------------------------------------------
+// Helm releases (via the helm CLI)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct HelmListQuery {
+    namespace: Option<String>,
+    context: Option<String>,
+}
+
+async fn handle_helm_releases(
+    Query(q): Query<HelmListQuery>,
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let ns = q.namespace.filter(|n| !n.is_empty() && n != "_all");
+
+    // -a includes failed / pending releases, which are the ones people need to find
+    let mut args = vec!["list", "-a", "-o", "json"];
+    match &ns {
+        Some(n) => {
+            args.push("-n");
+            args.push(n);
+        }
+        None => args.push("-A"),
+    }
+
+    match run_helm(&args, ctx_to_use, 30).await {
+        Ok(out) => {
+            let releases: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or(serde_json::json!([]));
+            Json(serde_json::json!({ "available": true, "releases": releases }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "available": false,
+            "helmMissing": e.contains("was not found on PATH"),
+            "error": e.trim(),
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+struct HelmReleaseQuery {
+    name: String,
+    namespace: String,
+    what: String,
+    all: Option<String>,
+    context: Option<String>,
+}
+
+async fn handle_helm_release(
+    Query(q): Query<HelmReleaseQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+
+    let args: Vec<&str> = match q.what.as_str() {
+        "values" if q.all.as_deref() == Some("true") => {
+            vec!["get", "values", &q.name, "-n", &q.namespace, "--all", "-o", "yaml"]
+        }
+        "values" => vec!["get", "values", &q.name, "-n", &q.namespace, "-o", "yaml"],
+        "manifest" => vec!["get", "manifest", &q.name, "-n", &q.namespace],
+        "notes" => vec!["get", "notes", &q.name, "-n", &q.namespace],
+        "history" => vec!["history", &q.name, "-n", &q.namespace, "-o", "json"],
+        other => return Err((StatusCode::BAD_REQUEST, format!("Unknown helm view '{}'", other))),
+    };
+
+    let out = run_helm(&args, ctx_to_use, 30)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    if q.what == "history" {
+        let parsed: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or(serde_json::json!([]));
+        return Ok(Json(serde_json::json!({ "history": parsed })));
+    }
+    Ok(Json(serde_json::json!({ "content": out })))
+}
+
+#[derive(Deserialize)]
+struct HelmActionRequest {
+    name: String,
+    namespace: String,
+    revision: Option<i64>,
+    context: Option<String>,
+}
+
+async fn handle_helm_rollback(
+    State(state): State<AppState>,
+    Json(req): Json<HelmActionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let rev = req.revision.map(|r| r.to_string()).unwrap_or_default();
+    let mut args = vec!["rollback", req.name.as_str()];
+    // helm treats an omitted revision as "previous release"
+    if !rev.is_empty() {
+        args.push(&rev);
+    }
+    args.push("-n");
+    args.push(&req.namespace);
+
+    let out = run_helm(&args, ctx_to_use, 300).await.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.cache.invalidate_prefix(&format!("k8s:{}:", ctx_to_use)).await;
+    Ok(Json(serde_json::json!({ "success": true, "output": out })))
+}
+
+async fn handle_helm_uninstall(
+    State(state): State<AppState>,
+    Json(req): Json<HelmActionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let out = run_helm(&["uninstall", &req.name, "-n", &req.namespace], ctx_to_use, 300)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    state.cache.invalidate_prefix(&format!("k8s:{}:", ctx_to_use)).await;
+    Ok(Json(serde_json::json!({ "success": true, "output": out })))
+}
+
+// ---------------------------------------------------------------------------
+// Combined logs from several pods (or a label selector) in one SSE stream.
+// One connection for N pods: browsers cap concurrent connections per host at ~6,
+// so one EventSource per pod would starve the rest of the UI.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MultiLogsQuery {
+    /// Comma-separated `namespace/pod` pairs
+    pods: Option<String>,
+    /// Alternative to `pods`: label selector within `namespace`
+    selector: Option<String>,
+    namespace: Option<String>,
+    tail: Option<String>,
+    context: Option<String>,
+}
+
+type LineStream = std::pin::Pin<Box<dyn Stream<Item = String> + Send>>;
+
+/// Streams stdout (and stderr, marked) of one `kubectl logs -f --prefix` process.
+/// The child is owned by the stream, so dropping the stream kills kubectl.
+fn kubectl_log_stream(args: Vec<String>, ctx: String) -> LineStream {
+    Box::pin(async_stream::stream! {
+        let mut cmd = create_kubectl_cmd();
+        if !ctx.is_empty() {
+            cmd.arg("--context").arg(&ctx);
+        }
+        cmd.args(&args);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                yield format!("[kubellens] failed to start kubectl: {}", e);
+                return;
+            }
+        };
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            return;
+        };
+        let mut out = BufReader::new(stdout).lines();
+        let mut err = BufReader::new(stderr).lines();
+        let (mut out_done, mut err_done) = (false, false);
+
+        while !(out_done && err_done) {
+            let next = tokio::select! {
+                l = out.next_line(), if !out_done => match l {
+                    Ok(Some(line)) => Some(line),
+                    _ => { out_done = true; None }
+                },
+                l = err.next_line(), if !err_done => match l {
+                    Ok(Some(line)) => Some(format!("[kubellens] {}", line)),
+                    _ => { err_done = true; None }
+                },
+            };
+            if let Some(line) = next {
+                yield line;
+            }
+        }
+        drop(child);
+    })
+}
+
+async fn handle_multi_logs(
+    Query(q): Query<MultiLogsQuery>,
+    State(state): State<AppState>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    use futures_util::StreamExt;
+
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
+    let tail = format!("--tail={}", q.tail.as_deref().unwrap_or("100"));
+
+    let mut streams: Vec<LineStream> = Vec::new();
+    if let Some(selector) = q.selector.as_deref().filter(|s| !s.is_empty()) {
+        let ns = q.namespace.clone().unwrap_or_else(|| "default".to_string());
+        streams.push(kubectl_log_stream(
+            vec![
+                "logs".into(),
+                "-f".into(),
+                "-l".into(),
+                selector.to_string(),
+                "-n".into(),
+                ns,
+                "--prefix".into(),
+                "--all-containers=true".into(),
+                "--max-log-requests=30".into(),
+                tail,
+            ],
+            ctx_to_use,
+        ));
+    } else {
+        let targets: Vec<(String, String)> = q
+            .pods
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|t| t.split_once('/').map(|(ns, p)| (ns.trim().to_string(), p.trim().to_string())))
+            .filter(|(ns, p)| !ns.is_empty() && !p.is_empty())
+            .take(30)
+            .collect();
+        if targets.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "No pods selected".to_string()));
+        }
+        for (ns, pod) in targets {
+            streams.push(kubectl_log_stream(
+                vec![
+                    "logs".into(),
+                    "-f".into(),
+                    pod,
+                    "-n".into(),
+                    ns,
+                    "--prefix".into(),
+                    "--all-containers=true".into(),
+                    tail.clone(),
+                ],
+                ctx_to_use.clone(),
+            ));
+        }
+    }
+
+    let merged = futures_util::stream::select_all(streams).map(|line| Ok(Event::default().data(line)));
+    Ok(Sse::new(merged).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(5))))
+}
+
+// ---------------------------------------------------------------------------
+// Interactive shell: `kubectl exec -it` inside a pseudo-terminal, bridged to a
+// WebSocket. Binary frames carry terminal bytes both ways; text frames carry
+// JSON control messages ({"resize": {"cols": .., "rows": ..}}).
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ExecQuery {
+    pod: String,
+    namespace: String,
+    container: Option<String>,
+    context: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+#[derive(Deserialize)]
+struct ExecResize {
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+struct ExecControl {
+    resize: Option<ExecResize>,
+}
+
+// Prefer bash when the image has it; distroless images without any shell report an error
+const SHELL_BOOTSTRAP: &str =
+    "export TERM=xterm-256color; if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi";
+
+async fn handle_exec_ws(
+    ws: WebSocketUpgrade,
+    Query(q): Query<ExecQuery>,
+    State(state): State<AppState>,
+) -> Response {
+    let current_ctx = state.ctx().await;
+    let ctx = q.context.clone().filter(|c| !c.is_empty()).unwrap_or(current_ctx);
+    ws.on_upgrade(move |socket| exec_session(socket, q, ctx))
+}
+
+async fn exec_session(mut socket: WebSocket, q: ExecQuery, ctx: String) {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::{Read, Write};
+
+    let size = PtySize {
+        rows: q.rows.unwrap_or(24).max(2),
+        cols: q.cols.unwrap_or(80).max(10),
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let mut cmd = CommandBuilder::new("kubectl");
+    if !ctx.is_empty() {
+        cmd.args(["--context", &ctx]);
+    }
+    cmd.args(["exec", "-it", &q.pod, "-n", &q.namespace]);
+    if let Some(c) = q.container.as_deref().filter(|c| !c.is_empty()) {
+        cmd.args(["-c", c]);
+    }
+    cmd.args(["--", "sh", "-c", SHELL_BOOTSTRAP]);
+
+    // Every PTY call can block (ConPTY in particular), so none of them may run on an
+    // async worker thread: a stuck worker can stall the whole server.
+    let setup = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let pair = native_pty_system().openpty(size).map_err(|e| format!("Failed to open terminal: {}", e))?;
+        let child = pair.slave.spawn_command(cmd).map_err(|e| format!("Failed to start kubectl exec: {}", e))?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        Ok((pair.master, child, reader, writer))
+    })
+    .await;
+
+    let (master, mut child, mut reader, mut writer) = match setup {
+        Ok(Ok(parts)) => parts,
+        Ok(Err(e)) => {
+            let _ = socket.send(Message::Text(format!("\r\n{}\r\n", e))).await;
+            return;
+        }
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("\r\nTerminal setup failed: {}\r\n", e))).await;
+            return;
+        }
+    };
+    let mut killer = child.clone_killer();
+    let master = Arc::new(std::sync::Mutex::new(master));
+
+    // PTY reads/writes are blocking, so they run on their own threads and talk to this
+    // task through channels.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        for data in in_rx {
+            if writer.write_all(&data).is_err() || writer.flush().is_err() {
+                break;
+            }
+        }
+    });
+
+    // On Windows (ConPTY) the reader doesn't reliably see EOF when the child exits,
+    // so wait on the process itself and signal the session loop.
+    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let _ = exit_tx.send(());
+    });
+
+    loop {
+        tokio::select! {
+            out = out_rx.recv() => match out {
+                Some(bytes) => {
+                    if socket.send(Message::Binary(bytes)).await.is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            msg = socket.recv() => match msg {
+                Some(Ok(Message::Binary(bytes))) => {
+                    let _ = in_tx.send(bytes);
+                }
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(ExecControl { resize: Some(r) }) = serde_json::from_str::<ExecControl>(&text) {
+                        let master = master.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Ok(m) = master.lock() {
+                                let _ = m.resize(PtySize { rows: r.rows.max(2), cols: r.cols.max(10), pixel_width: 0, pixel_height: 0 });
+                            }
+                        });
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
+            _ = &mut exit_rx => {
+                // Give the reader a moment to deliver the shell's last output
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                while let Ok(bytes) = out_rx.try_recv() {
+                    let _ = socket.send(Message::Binary(bytes)).await;
+                }
+                break;
+            }
+        }
+    }
+
+    let _ = socket.send(Message::Close(None)).await;
+    // ConPTY opens with a cursor-position query (ESC[6n) and won't shut down until it is
+    // answered. xterm.js answers it, but a session dropped within the first moments
+    // never did, so answer it here; the session is being torn down anyway.
+    let _ = in_tx.send(b"\x1b[1;1R".to_vec());
+    drop(in_tx);
+    // Keep draining PTY output while the console shuts down: ConPTY's close waits for
+    // its output pipe to be read, and the reader thread needs a live receiver for that.
+    tokio::spawn(async move { while out_rx.recv().await.is_some() {} });
+    tokio::task::spawn_blocking(move || {
+        let _ = killer.kill();
+        drop(master);
+    });
+}
+
 #[derive(rust_embed::RustEmbed)]
 #[folder = "frontend/dist/"]
 struct EmbeddedFrontend;
@@ -1213,6 +1832,16 @@ async fn main() {
         .route("/port-forward/start", post(handle_start_port_forward))
         .route("/port-forward/stop", post(handle_stop_port_forward))
         .route("/port-forward/list", get(handle_list_port_forwards))
+        .route("/metrics/pods", get(handle_pod_metrics))
+        .route("/metrics/nodes", get(handle_node_metrics))
+        .route("/k8s/rollout/undo", post(handle_rollout_undo))
+        .route("/node/action", post(handle_node_action))
+        .route("/helm/releases", get(handle_helm_releases))
+        .route("/helm/release", get(handle_helm_release))
+        .route("/helm/rollback", post(handle_helm_rollback))
+        .route("/helm/uninstall", post(handle_helm_uninstall))
+        .route("/k8s/logs/multi", get(handle_multi_logs))
+        .route("/exec/ws", get(handle_exec_ws))
         .with_state(state);
 
     match static_dir_override() {
