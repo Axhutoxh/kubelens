@@ -90,7 +90,7 @@ bun x @tauri-apps/cli build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.0.2 && git push origin v1.0.2
+git tag v1.1.0 && git push origin v1.1.0
 ```
 | Platform | Release asset |
 | :--- | :--- |
@@ -110,6 +110,17 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 
 ## ✨ Features Implemented in the Suite
 
+### New in 1.1
+* **Pod Shell**: Full interactive terminal in any running container (`kubectl exec -it` over a native PTY + xterm.js). Supports vim/top/tab completion, container switching and reconnect.
+* **Live Metrics**: CPU / memory columns on Pods and utilisation bars on Nodes (requires metrics-server; degrades gracefully without it).
+* **Rollout History & Rollback**: Per-deployment revision list (images, change cause, age) with one-click rollback.
+* **Multi-select Pods**: Checkbox selection with Shift-click ranges; bulk delete, copy names, and **combined logs** from many pods (or every pod of a deployment) in one colour-coded stream.
+* **Command Palette (Ctrl+K)**: Fuzzy-search pods, deployments, services, views, namespaces and contexts.
+* **Helm Releases**: List releases in any status; view user/all values, manifest, notes and history; roll back or uninstall (uses the local `helm` CLI).
+* **Custom Resources**: Browse every installed CRD, grouped by API group, using each CRD's own printer columns.
+* **Node Maintenance**: Cordon, uncordon and drain (with optional force) from the Nodes view.
+
+### Core
 * **Multi-Cluster Context Discovery**: Auto-detects all contexts from `~/.kube/config` with live switching.
 * **Workloads & Pods Management**: Real-time phase tracking, restart counters, IP addresses, node assignment.
 * **Deployments**: Desired/ready replicas, container image tags, replica scaling modal, rolling restarts.

@@ -14,9 +14,56 @@ import {
   FolderTree,
   Sparkles,
   PanelLeftClose,
-  PanelLeftOpen
+  PanelLeftOpen,
+  Package,
+  Puzzle
 } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
+
+export const NAV_SECTIONS = [
+  {
+    title: 'Studio & Cluster',
+    items: [
+      { id: 'smart-lens-studio', label: '⚡ Smart Lens Studio', icon: Sparkles },
+      { id: 'overview', label: 'Overview', icon: Activity },
+      { id: 'nodes', label: 'Nodes', icon: Cpu },
+      { id: 'events', label: 'Events', icon: Radio },
+      { id: 'namespaces', label: 'Namespaces', icon: FolderTree },
+    ],
+  },
+  {
+    title: 'Workloads',
+    items: [
+      { id: 'pods', label: 'Pods', icon: Box },
+      { id: 'deployments', label: 'Deployments', icon: Layers },
+      { id: 'statefulsets', label: 'StatefulSets', icon: Server },
+      { id: 'daemonsets', label: 'DaemonSets', icon: Layers },
+      { id: 'jobs', label: 'Jobs & CronJobs', icon: Activity },
+    ],
+  },
+  {
+    title: 'Configuration',
+    items: [
+      { id: 'configmaps', label: 'ConfigMaps', icon: FileText },
+      { id: 'secrets', label: 'Secrets', icon: ShieldCheck },
+    ],
+  },
+  {
+    title: 'Network & Storage',
+    items: [
+      { id: 'services', label: 'Services', icon: Network },
+      { id: 'ingresses', label: 'Ingresses', icon: Network },
+      { id: 'storage', label: 'Storage Classes & PVs', icon: Database },
+    ],
+  },
+  {
+    title: 'Apps & Extensions',
+    items: [
+      { id: 'helm', label: 'Helm Releases', icon: Package },
+      { id: 'crds', label: 'Custom Resources', icon: Puzzle },
+    ],
+  },
+];
 
 interface SidebarProps {
   currentView: string;
@@ -37,43 +84,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isCollapsed = false,
   onToggleCollapse,
 }) => {
-  const navSections = [
-    {
-      title: 'Studio & Cluster',
-      items: [
-        { id: 'smart-lens-studio', label: '⚡ Smart Lens Studio', icon: Sparkles },
-        { id: 'overview', label: 'Overview', icon: Activity },
-        { id: 'nodes', label: 'Nodes', icon: Cpu },
-        { id: 'events', label: 'Events', icon: Radio },
-        { id: 'namespaces', label: 'Namespaces', icon: FolderTree },
-      ],
-    },
-    {
-      title: 'Workloads',
-      items: [
-        { id: 'pods', label: 'Pods', icon: Box },
-        { id: 'deployments', label: 'Deployments', icon: Layers },
-        { id: 'statefulsets', label: 'StatefulSets', icon: Server },
-        { id: 'daemonsets', label: 'DaemonSets', icon: Layers },
-        { id: 'jobs', label: 'Jobs & CronJobs', icon: Activity },
-      ],
-    },
-    {
-      title: 'Configuration',
-      items: [
-        { id: 'configmaps', label: 'ConfigMaps', icon: FileText },
-        { id: 'secrets', label: 'Secrets', icon: ShieldCheck },
-      ],
-    },
-    {
-      title: 'Network & Storage',
-      items: [
-        { id: 'services', label: 'Services', icon: Network },
-        { id: 'ingresses', label: 'Ingresses', icon: Network },
-        { id: 'storage', label: 'Storage Classes & PVs', icon: Database },
-      ],
-    },
-  ];
 
   return (
     <div 
@@ -172,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Navigation List */}
       <div className="flex-1 overflow-y-auto py-2 px-2 space-y-4">
-        {navSections.map((section) => (
+        {NAV_SECTIONS.map((section) => (
           <div key={section.title}>
             {!isCollapsed && (
               <div className="px-2 mb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -216,7 +226,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-mono text-cyan-400/90 font-bold tracking-tight">KUBELLENS</span>
               <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
-                v1.0.2 Native
+                v1.1.0 Native
               </span>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">

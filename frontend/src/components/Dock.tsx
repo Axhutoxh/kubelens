@@ -1,26 +1,32 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  X, 
-  Terminal, 
-  FileCode, 
-  Download, 
-  Trash2, 
-  Clock, 
-  ArrowDown, 
-  Play, 
-  CheckCircle, 
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import {
+  X,
+  Terminal,
+  FileCode,
+  Download,
+  Trash2,
+  Clock,
+  ArrowDown,
+  Play,
+  CheckCircle,
   AlertCircle,
   Minimize2,
-  Maximize2
+  Maximize2,
+  SquareTerminal,
+  Rows3,
+  RotateCcw
 } from 'lucide-react';
-import { applyManifest } from '../api/client';
+import { applyManifest, multiLogsUrl } from '../api/client';
+
+// xterm.js is only downloaded the first time a shell is opened
+const ShellTerminal = lazy(() => import('./ShellTerminal'));
 
 // Upper bound on lines kept in memory per log view (oldest lines are dropped first)
 const MAX_LOG_LINES = 5000;
 
 export interface DockTask {
   id: string;
-  type: 'logs' | 'manifest';
+  type: 'logs' | 'manifest' | 'shell' | 'multilogs';
   title: string;
   pod?: string;
   namespace?: string;
@@ -30,6 +36,12 @@ export interface DockTask {
   name?: string;
   content?: string;
   context?: string;
+  /** multilogs: explicit pods to merge */
+  targets?: Array<{ name: string; namespace: string }>;
+  /** multilogs: label selector (with `namespace`) instead of explicit pods */
+  selector?: string;
+  /** shell: bumped to reconnect */
+  sessionKey?: number;
 }
 
 interface DockProps {
@@ -39,7 +51,37 @@ interface DockProps {
   activeTaskId: string;
   onSelectTask: (id: string) => void;
   onCloseTask: (id: string) => void;
+  onUpdateTask?: (id: string, patch: Partial<DockTask>) => void;
 }
+
+// Stable colour per pod in combined log views
+const POD_COLORS = ['text-cyan-400', 'text-violet-400', 'text-amber-400', 'text-emerald-400', 'text-pink-400', 'text-sky-400', 'text-lime-400', 'text-orange-400'];
+const colorFor = (s: string) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return POD_COLORS[Math.abs(h) % POD_COLORS.length];
+};
+// `kubectl logs --prefix` lines look like "[pod/<name>/<container>] message"
+const PREFIX_RE = /^\[pod\/([^/\]]+)\/([^\]]+)\] ?(.*)$/;
+
+const LogLine: React.FC<{ line: string; combined: boolean }> = ({ line, combined }) => {
+  if (combined) {
+    const m = PREFIX_RE.exec(line);
+    if (m) {
+      return (
+        <div className="hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all">
+          <span className={`${colorFor(m[1])} font-semibold`}>{m[1]}</span>
+          <span className="text-slate-600">/{m[2]} </span>
+          {m[3]}
+        </div>
+      );
+    }
+    if (line.startsWith('[kubellens]')) {
+      return <div className="px-1 text-amber-400/90 whitespace-pre-wrap break-all">{line}</div>;
+    }
+  }
+  return <div className="hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all">{line}</div>;
+};
 
 export const Dock: React.FC<DockProps> = ({
   isOpen,
@@ -48,6 +90,7 @@ export const Dock: React.FC<DockProps> = ({
   activeTaskId,
   onSelectTask,
   onCloseTask,
+  onUpdateTask,
 }) => {
   const activeTask = tasks.find((t) => t.id === activeTaskId) || tasks[0];
 
@@ -84,9 +127,11 @@ export const Dock: React.FC<DockProps> = ({
     }
   }, [activeTask?.id, activeTask?.type, activeTask?.content]);
 
-  // Handle streaming logs via EventSource for active log task
+  // Handle streaming logs via EventSource for the active log / combined-log task
   useEffect(() => {
-    if (!isOpen || !activeTask || activeTask.type !== 'logs' || !activeTask.pod || !activeTask.namespace) {
+    const isSingle = activeTask?.type === 'logs' && !!activeTask.pod && !!activeTask.namespace;
+    const isMulti = activeTask?.type === 'multilogs' && (!!activeTask.targets?.length || !!activeTask.selector);
+    if (!isOpen || !activeTask || (!isSingle && !isMulti)) {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -95,16 +140,27 @@ export const Dock: React.FC<DockProps> = ({
     }
 
     setLogs([]);
-    const url = new URL('/api/k8s/logs/stream', window.location.origin);
-    url.searchParams.set('pod', activeTask.pod);
-    url.searchParams.set('namespace', activeTask.namespace);
-    if (selectedContainer) url.searchParams.set('container', selectedContainer);
-    if (activeTask.context) url.searchParams.set('context', activeTask.context);
-    url.searchParams.set('timestamps', showTimestamps ? 'true' : 'false');
-    url.searchParams.set('follow', 'true');
-    url.searchParams.set('tail', '200');
+    let streamUrl: string;
+    if (isMulti) {
+      streamUrl = multiLogsUrl({
+        pods: activeTask.targets,
+        selector: activeTask.selector,
+        namespace: activeTask.namespace,
+        context: activeTask.context,
+      });
+    } else {
+      const url = new URL('/api/k8s/logs/stream', window.location.origin);
+      url.searchParams.set('pod', activeTask.pod!);
+      url.searchParams.set('namespace', activeTask.namespace!);
+      if (selectedContainer) url.searchParams.set('container', selectedContainer);
+      if (activeTask.context) url.searchParams.set('context', activeTask.context);
+      url.searchParams.set('timestamps', showTimestamps ? 'true' : 'false');
+      url.searchParams.set('follow', 'true');
+      url.searchParams.set('tail', '200');
+      streamUrl = url.toString();
+    }
 
-    const es = new EventSource(url.toString());
+    const es = new EventSource(streamUrl);
     eventSourceRef.current = es;
 
     // Batch incoming lines and flush once per frame: a chatty pod can emit hundreds of
@@ -135,7 +191,7 @@ export const Dock: React.FC<DockProps> = ({
       if (frame) cancelAnimationFrame(frame);
       es.close();
     };
-  }, [isOpen, activeTask?.id, activeTask?.pod, activeTask?.namespace, activeTask?.context, selectedContainer, showTimestamps]);
+  }, [isOpen, activeTask?.id, activeTask?.type, activeTask?.pod, activeTask?.namespace, activeTask?.context, activeTask?.targets, activeTask?.selector, selectedContainer, showTimestamps]);
 
   // Auto-scroll
   useEffect(() => {
@@ -164,22 +220,36 @@ export const Dock: React.FC<DockProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${activeTask?.pod || 'logs'}.log`;
+    a.download = `${activeTask?.pod || activeTask?.title.replace(/[^a-z0-9-]+/gi, '_') || 'logs'}.log`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (!isOpen || tasks.length === 0 || !activeTask) return null;
+  const shellTasks = tasks.filter((t) => t.type === 'shell');
+  // With live shells the dock stays mounted (just hidden) so closing the panel
+  // doesn't kill their sessions
+  if (tasks.length === 0 || !activeTask) return null;
+  if (!isOpen && shellTasks.length === 0) return null;
 
+  const isLogLike = activeTask.type === 'logs' || activeTask.type === 'multilogs';
   const filteredLogs = logFilter
     ? logs.filter((l) => l.toLowerCase().includes(logFilter.toLowerCase()))
     : logs;
 
+  const tabIcon = (type: DockTask['type']) => {
+    switch (type) {
+      case 'logs': return <Terminal className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
+      case 'multilogs': return <Rows3 className="w-3.5 h-3.5 text-violet-400 shrink-0" />;
+      case 'shell': return <SquareTerminal className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+      default: return <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
+    }
+  };
+
   return (
-    <div 
-      className={`border-t border-slate-800 bg-slate-950 flex flex-col z-30 transition-all ${
-        isMaximized ? 'h-[75vh]' : 'h-72'
-      }`}
+    <div
+      className={`border-t border-slate-800 bg-slate-950 flex-col z-30 transition-all ${
+        isOpen ? 'flex' : 'hidden'
+      } ${isMaximized ? 'h-[75vh]' : 'h-72'}`}
     >
       {/* Dock Tabs Header */}
       <div className="h-9 border-b border-slate-800 bg-slate-900/90 px-3 flex items-center justify-between gap-4 select-none shrink-0">
@@ -198,11 +268,7 @@ export const Dock: React.FC<DockProps> = ({
                     : 'bg-slate-900/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-slate-800/80'
                 }`}
               >
-                {task.type === 'logs' ? (
-                  <Terminal className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                ) : (
-                  <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                )}
+                {tabIcon(task.type)}
                 <span className="truncate max-w-[200px]" title={task.title}>
                   {task.title}
                 </span>
@@ -226,10 +292,34 @@ export const Dock: React.FC<DockProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 shrink-0">
-          {activeTask.type === 'logs' && (
+          {activeTask.type === 'shell' && (
+            <>
+              {activeTask.containers && activeTask.containers.length > 1 && (
+                <select
+                  value={activeTask.container || activeTask.containers[0]}
+                  onChange={(e) => onUpdateTask?.(activeTask.id, { container: e.target.value })}
+                  className="bg-slate-950 border border-slate-800 text-[11px] text-slate-300 rounded px-2 py-0.5"
+                  title="Container"
+                >
+                  {activeTask.containers.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => onUpdateTask?.(activeTask.id, { sessionKey: (activeTask.sessionKey || 0) + 1 })}
+                className="p-1 rounded text-slate-400 hover:text-emerald-300"
+                title="Restart shell session"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+
+          {isLogLike && (
             <>
               {/* Container selector */}
-              {activeTask.containers && activeTask.containers.length > 1 && (
+              {activeTask.type === 'logs' && activeTask.containers && activeTask.containers.length > 1 && (
                 <select
                   value={selectedContainer}
                   onChange={(e) => setSelectedContainer(e.target.value)}
@@ -251,13 +341,15 @@ export const Dock: React.FC<DockProps> = ({
               />
 
               {/* Timestamps toggle */}
-              <button
-                onClick={() => setShowTimestamps(!showTimestamps)}
-                className={`p-1 rounded text-slate-400 hover:text-slate-200 ${showTimestamps ? 'text-cyan-400 bg-slate-800' : ''}`}
-                title="Toggle Timestamps"
-              >
-                <Clock className="w-3.5 h-3.5" />
-              </button>
+              {activeTask.type === 'logs' && (
+                <button
+                  onClick={() => setShowTimestamps(!showTimestamps)}
+                  className={`p-1 rounded text-slate-400 hover:text-slate-200 ${showTimestamps ? 'text-cyan-400 bg-slate-800' : ''}`}
+                  title="Toggle Timestamps"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                </button>
+              )}
 
               {/* Follow / Auto-scroll toggle */}
               <button
@@ -321,19 +413,38 @@ export const Dock: React.FC<DockProps> = ({
 
       {/* Dock Content Body */}
       <div className="flex-1 overflow-hidden relative">
-        {activeTask.type === 'logs' && (
+        {isLogLike && (
           <div className="h-full overflow-auto p-3 font-mono text-xs text-slate-300 leading-relaxed bg-slate-950 selection:bg-cyan-500/30">
             {filteredLogs.length === 0 ? (
-              <div className="text-slate-600 italic">Waiting for log stream from {activeTask.pod}...</div>
+              <div className="text-slate-600 italic">
+                Waiting for log stream from {activeTask.type === 'multilogs'
+                  ? (activeTask.selector ? `pods matching ${activeTask.selector}` : `${activeTask.targets?.length || 0} pods`)
+                  : activeTask.pod}...
+              </div>
             ) : (
               filteredLogs.map((line, idx) => (
-                <div key={idx} className="hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all">
-                  {line}
-                </div>
+                <LogLine key={idx} line={line} combined={activeTask.type === 'multilogs'} />
               ))
             )}
             <div ref={logsEndRef} />
           </div>
+        )}
+
+        {/* Shell sessions stay mounted (hidden when inactive) so they keep running */}
+        {shellTasks.length > 0 && (
+          <Suspense fallback={<div className="p-3 text-xs text-slate-500">Loading terminal…</div>}>
+            {shellTasks.map((t) => (
+              <ShellTerminal
+                key={t.id}
+                pod={t.pod!}
+                namespace={t.namespace!}
+                container={t.container}
+                context={t.context}
+                sessionKey={t.sessionKey || 0}
+                visible={isOpen && t.id === activeTask.id}
+              />
+            ))}
+          </Suspense>
         )}
 
         {activeTask.type === 'manifest' && (

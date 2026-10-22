@@ -164,6 +164,10 @@ export interface DeploymentItem {
 
 export interface NodeItem {
   metadata: KubeMetadata;
+  spec?: {
+    unschedulable?: boolean;
+    taints?: Array<{ key: string; value?: string; effect: string }>;
+  };
   status: {
     addresses?: Array<{ type: string; address: string }>;
     nodeInfo?: {
@@ -446,3 +450,29 @@ export interface NamespaceItem {
   };
 }
 
+
+export interface ReplicaSetItem {
+  metadata: KubeMetadata;
+  spec: {
+    replicas?: number;
+    template?: {
+      spec?: { containers?: Array<{ name: string; image: string }> };
+    };
+  };
+  status: { replicas?: number; readyReplicas?: number };
+}
+
+export interface CustomResourceDefinitionItem {
+  metadata: KubeMetadata;
+  spec: {
+    group: string;
+    scope: 'Namespaced' | 'Cluster';
+    names: { kind: string; plural: string; singular?: string; shortNames?: string[] };
+    versions: Array<{
+      name: string;
+      served: boolean;
+      storage: boolean;
+      additionalPrinterColumns?: Array<{ name: string; type: string; jsonPath: string; priority?: number }>;
+    }>;
+  };
+}

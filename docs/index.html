@@ -316,7 +316,7 @@
 <header class="hero">
   <div class="wrap">
     <div>
-      <div class="pill"><span class="dot"></span><b>v1.0.2</b> Windows · macOS · Linux · Zero Electron</div>
+      <div class="pill"><span class="dot"></span><b>v1.1.0</b> Windows · macOS · Linux · Zero Electron</div>
       <div class="logo-orbit">
         <svg viewBox="0 0 132 132" fill="none">
           <circle cx="66" cy="66" r="62" stroke="url(#g1)" stroke-width="1.5" stroke-dasharray="4 10" />
@@ -786,6 +786,14 @@
   /* ---- features ---- */
   const icon = p => `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const feats = [
+    ['Pod shell', 'A real terminal inside any container: bash, vim, top and tab completion over a native PTY.', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>'],
+    ['Live CPU & memory', 'Per-pod usage columns and per-node utilisation bars from metrics-server.', '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>'],
+    ['Rollback in one click', 'Deployment revision history with images and change causes; roll back to any revision.', '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>'],
+    ['Helm releases', 'Values, manifests, notes and history for every release, plus rollback and uninstall.', '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12M3 7l9 5 9-5"/>'],
+    ['Bulk actions & combined logs', 'Multi-select pods to delete them together or stream all their logs in one colour-coded view.', '<rect x="3" y="4" width="4" height="4" rx="1"/><rect x="3" y="10" width="4" height="4" rx="1"/><rect x="3" y="16" width="4" height="4" rx="1"/><path d="M10 6h11M10 12h11M10 18h11"/>'],
+    ['Command palette', 'Ctrl+K to jump to any pod, deployment, view, namespace or context instantly.', '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'],
+    ['Custom resources', 'Browse any CRD with its own printer columns: cert-manager, Istio, ArgoCD, Prometheus and more.', '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>'],
+    ['Node maintenance', 'Cordon, uncordon and drain nodes, with a safe default and an explicit force option.', '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>'],
     ['Multi-cluster contexts', 'Auto-discovers every context in ~/.kube/config with instant live switching.', '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 16m4.5-8.5L13 16M9 6h6"/>'],
     ['Workloads, fully', 'Pods, Deployments, StatefulSets, DaemonSets — scale, restart and roll out from one place.', '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>'],
     ['Live log streaming', 'Server-Sent Events piped straight from Tokio processes. No buffering, no GC hiccups.', '<path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1.5"/>'],
@@ -842,7 +850,7 @@
       ['<span class="c">[1/2] Compiling React 19 Frontend Dashboard…</span>', 0],
       ['  vite v6 building for production…  <span class="p">✓</span> 254 KB initial (lazy views)', 0],
       ['<span class="c">[2/2] Packaging Native Tauri Release…</span>', 0],
-      ['  <span class="o">Compiling</span> freelens-rust v1.0.2 (release, lto=fat)', 0],
+      ['  <span class="o">Compiling</span> freelens-rust v1.1.0 (release, lto=fat)', 0],
       ['  <span class="p">Finished</span> release in 1m 42s', 0],
       ['  <span class="p">✓</span> release\\kubellens-setup.exe', 0],
       ['<span class="p">PS&gt;</span> <span class="k">.\\release\\kubellens.exe</span>', 30],

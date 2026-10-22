@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   Layers, 
   Sliders, 
@@ -7,9 +7,12 @@ import {
   Trash2, 
   CheckCircle2, 
   AlertCircle,
-  Tag
+  Tag,
+  History,
+  Rows3
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
+import { RolloutHistoryModal } from '../components/RolloutHistoryModal';
 
 interface DeploymentsViewProps {
   deployments: DeploymentItem[];
@@ -18,6 +21,10 @@ interface DeploymentsViewProps {
   onRestart: (kind: string, name: string, namespace: string) => void;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+  /** Combined logs from every pod of the deployment (via its label selector) */
+  onOpenAllLogs?: (dep: DeploymentItem) => void;
+  onRefresh?: () => void;
+  onToast?: (message: string, type?: 'success' | 'error') => void;
 }
 
 export function parseImage(imageStr?: string) {
@@ -57,7 +64,11 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   onRestart,
   onOpenManifest,
   onDelete,
+  onOpenAllLogs,
+  onRefresh,
+  onToast,
 }) => {
+  const [historyFor, setHistoryFor] = useState<DeploymentItem | null>(null);
   const filteredDeployments = deployments.filter((d) => {
     const name = d.metadata.name.toLowerCase();
     const ns = (d.metadata.namespace || '').toLowerCase();
@@ -197,6 +208,24 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                         >
                           <RotateCw className="w-3.5 h-3.5" />
                         </button>
+                        {/* Rollout history / rollback */}
+                        <button
+                          onClick={() => setHistoryFor(dep)}
+                          title="Rollout History & Rollback"
+                          className="p-1 text-slate-400 hover:text-amber-300 hover:bg-slate-800 rounded transition-colors"
+                        >
+                          <History className="w-3.5 h-3.5" />
+                        </button>
+                        {/* Combined logs of all pods */}
+                        {onOpenAllLogs && (
+                          <button
+                            onClick={() => onOpenAllLogs(dep)}
+                            title="Logs from all pods"
+                            className="p-1 text-slate-400 hover:text-violet-300 hover:bg-slate-800 rounded transition-colors"
+                          >
+                            <Rows3 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {/* Manifest */}
                         <button
                           onClick={() => onOpenManifest('deployment', dep.metadata.name, dep.metadata.namespace!)}
@@ -222,6 +251,15 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           </tbody>
         </table>
       </div>
+
+      {historyFor && (
+        <RolloutHistoryModal
+          deployment={historyFor}
+          onClose={() => setHistoryFor(null)}
+          onRolledBack={() => onRefresh?.()}
+          onToast={(m, t) => onToast?.(m, t)}
+        />
+      )}
     </div>
   );
 };

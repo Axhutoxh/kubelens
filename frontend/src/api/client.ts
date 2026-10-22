@@ -212,3 +212,146 @@ export async function fetchPodEvents(name: string, namespace: string, context?: 
 }
 
 
+// ---------------------------------------------------------------------------
+// Metrics (requires metrics-server in the cluster)
+// ---------------------------------------------------------------------------
+
+export interface PodMetric { namespace: string; name: string; cpu: string; memory: string }
+export interface NodeMetric { name: string; cpu: string; cpuPercent: number | null; memory: string; memoryPercent: number | null }
+export interface MetricsResponse<T> { available: boolean; items?: T[]; error?: string }
+
+export async function fetchPodMetrics(namespace?: string, context?: string): Promise<MetricsResponse<PodMetric>> {
+  const url = new URL(`${API_BASE}/metrics/pods`, window.location.origin);
+  if (namespace && namespace !== '_all') url.searchParams.set('namespace', namespace);
+  if (context && context.trim()) url.searchParams.set('context', context.trim());
+  const res = await fetch(url.toString());
+  if (!res.ok) return { available: false, error: await res.text() };
+  return res.json();
+}
+
+export async function fetchNodeMetrics(context?: string): Promise<MetricsResponse<NodeMetric>> {
+  const url = new URL(`${API_BASE}/metrics/nodes`, window.location.origin);
+  if (context && context.trim()) url.searchParams.set('context', context.trim());
+  const res = await fetch(url.toString());
+  if (!res.ok) return { available: false, error: await res.text() };
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Rollouts & nodes
+// ---------------------------------------------------------------------------
+
+async function postJson(path: string, body: unknown, fallbackError: string) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || fallbackError);
+  }
+  return res.json();
+}
+
+export function rolloutUndo(kind: string, name: string, namespace: string, revision?: number, context?: string) {
+  return postJson('/k8s/rollout/undo', { kind, name, namespace, revision, context }, 'Rollback failed');
+}
+
+export function nodeAction(node: string, action: 'cordon' | 'uncordon' | 'drain', force = false, context?: string) {
+  return postJson('/node/action', { node, action, force, context }, `Failed to ${action} node`);
+}
+
+// ---------------------------------------------------------------------------
+// Helm
+// ---------------------------------------------------------------------------
+
+export interface HelmRelease {
+  name: string;
+  namespace: string;
+  revision: string;
+  updated: string;
+  status: string;
+  chart: string;
+  app_version: string;
+}
+
+export interface HelmHistoryEntry {
+  revision: number;
+  updated: string;
+  status: string;
+  chart: string;
+  app_version: string;
+  description: string;
+}
+
+export async function fetchHelmReleases(namespace?: string, context?: string): Promise<{
+  available: boolean;
+  helmMissing?: boolean;
+  releases?: HelmRelease[];
+  error?: string;
+}> {
+  const url = new URL(`${API_BASE}/helm/releases`, window.location.origin);
+  if (namespace && namespace !== '_all') url.searchParams.set('namespace', namespace);
+  if (context && context.trim()) url.searchParams.set('context', context.trim());
+  const res = await fetch(url.toString());
+  if (!res.ok) return { available: false, error: await res.text() };
+  return res.json();
+}
+
+export async function fetchHelmRelease(
+  name: string,
+  namespace: string,
+  what: 'values' | 'manifest' | 'notes' | 'history',
+  opts: { all?: boolean; context?: string } = {}
+): Promise<{ content?: string; history?: HelmHistoryEntry[] }> {
+  const url = new URL(`${API_BASE}/helm/release`, window.location.origin);
+  url.searchParams.set('name', name);
+  url.searchParams.set('namespace', namespace);
+  url.searchParams.set('what', what);
+  if (opts.all) url.searchParams.set('all', 'true');
+  if (opts.context && opts.context.trim()) url.searchParams.set('context', opts.context.trim());
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error((await res.text()) || `Failed to load helm ${what}`);
+  return res.json();
+}
+
+export function helmRollback(name: string, namespace: string, revision?: number, context?: string) {
+  return postJson('/helm/rollback', { name, namespace, revision, context }, 'Helm rollback failed');
+}
+
+export function helmUninstall(name: string, namespace: string, context?: string) {
+  return postJson('/helm/uninstall', { name, namespace, context }, 'Helm uninstall failed');
+}
+
+// ---------------------------------------------------------------------------
+// Streaming endpoints (URLs only; consumers open EventSource / WebSocket)
+// ---------------------------------------------------------------------------
+
+export function multiLogsUrl(opts: {
+  pods?: Array<{ name: string; namespace: string }>;
+  selector?: string;
+  namespace?: string;
+  tail?: number;
+  context?: string;
+}) {
+  const url = new URL(`${API_BASE}/k8s/logs/multi`, window.location.origin);
+  if (opts.pods?.length) url.searchParams.set('pods', opts.pods.map((p) => `${p.namespace}/${p.name}`).join(','));
+  if (opts.selector) url.searchParams.set('selector', opts.selector);
+  if (opts.namespace) url.searchParams.set('namespace', opts.namespace);
+  url.searchParams.set('tail', String(opts.tail ?? 100));
+  if (opts.context && opts.context.trim()) url.searchParams.set('context', opts.context.trim());
+  return url.toString();
+}
+
+export function execSocketUrl(opts: { pod: string; namespace: string; container?: string; context?: string; cols: number; rows: number }) {
+  const url = new URL(`${API_BASE}/exec/ws`, window.location.origin);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('pod', opts.pod);
+  url.searchParams.set('namespace', opts.namespace);
+  if (opts.container) url.searchParams.set('container', opts.container);
+  if (opts.context && opts.context.trim()) url.searchParams.set('context', opts.context.trim());
+  url.searchParams.set('cols', String(opts.cols));
+  url.searchParams.set('rows', String(opts.rows));
+  return url.toString();
+}
