@@ -17,6 +17,22 @@ import {
 import { PodItem, PortForwardSession } from '../types/k8s';
 import { PodMetric } from '../api/client';
 import { parseImageTag } from '../components/PodDetailModal';
+import { ColumnDef, ColumnPicker, useColumnVisibility } from '../components/ColumnPicker';
+
+const POD_COLUMNS: ColumnDef[] = [
+  { id: 'name', label: 'Name', locked: true },
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'image', label: 'Image Tag' },
+  { id: 'status', label: 'Status' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'restarts', label: 'Restarts' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'node', label: 'Node' },
+  { id: 'ip', label: 'IP' },
+  { id: 'actions', label: 'Actions', locked: true },
+];
+const POD_DEFAULT_COLUMNS = ['name', 'image', 'status', 'ready', 'cpu', 'memory', 'actions'];
 
 interface PodsViewProps {
   pods: PodItem[];
@@ -59,6 +75,8 @@ export const PodsView: React.FC<PodsViewProps> = ({
     const q = searchQuery.toLowerCase();
     return name.includes(q) || ns.includes(q) || phase.includes(q);
   });
+
+  const cols = useColumnVisibility('pods', POD_COLUMNS, POD_DEFAULT_COLUMNS);
 
   // Multi-select: keys of selected pods. Pods that disappear are simply ignored.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -139,9 +157,12 @@ export const PodsView: React.FC<PodsViewProps> = ({
             {filteredPods.length} of {pods.length}
           </span>
         </div>
-        {selected.size === 0 && (
-          <span className="text-[11px] text-slate-500">Tip: tick pods (Shift-click for a range) for bulk logs & delete</span>
-        )}
+        <div className="flex items-center gap-3">
+          {selected.size === 0 && (
+            <span className="text-[11px] text-slate-500 hidden lg:inline">Tip: tick pods (Shift-click for a range) for bulk logs & delete</span>
+          )}
+          <ColumnPicker columns={POD_COLUMNS} visible={cols.visible} onToggle={cols.toggle} onReset={cols.reset} isDefault={cols.isDefault} />
+        </div>
       </div>
 
       {/* Bulk action bar */}
@@ -202,28 +223,32 @@ export const PodsView: React.FC<PodsViewProps> = ({
                 />
               </th>
               <th className="py-2.5 px-4 font-semibold">Name</th>
-              <th className="py-2.5 px-4 font-semibold">Namespace</th>
-              <th className="py-2.5 px-4 font-semibold">Image Tag</th>
-              <th className="py-2.5 px-4 font-semibold">Status</th>
-              <th className="py-2.5 px-4 font-semibold">Ready</th>
-              <th className="py-2.5 px-4 font-semibold">Restarts</th>
-              <th
-                className="py-2.5 px-4 font-semibold"
-                title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Live CPU usage'}
-              >CPU</th>
-              <th
-                className="py-2.5 px-4 font-semibold"
-                title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Live memory usage'}
-              >Memory</th>
-              <th className="py-2.5 px-4 font-semibold">Node</th>
-              <th className="py-2.5 px-4 font-semibold">IP</th>
+              {cols.show('namespace') && <th className="py-2.5 px-4 font-semibold">Namespace</th>}
+              {cols.show('image') && <th className="py-2.5 px-4 font-semibold">Image Tag</th>}
+              {cols.show('status') && <th className="py-2.5 px-4 font-semibold">Status</th>}
+              {cols.show('ready') && <th className="py-2.5 px-4 font-semibold">Ready</th>}
+              {cols.show('restarts') && <th className="py-2.5 px-4 font-semibold">Restarts</th>}
+              {cols.show('cpu') && (
+                <th
+                  className="py-2.5 px-4 font-semibold"
+                  title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Live CPU usage'}
+                >CPU</th>
+              )}
+              {cols.show('memory') && (
+                <th
+                  className="py-2.5 px-4 font-semibold"
+                  title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Live memory usage'}
+                >Memory</th>
+              )}
+              {cols.show('node') && <th className="py-2.5 px-4 font-semibold">Node</th>}
+              {cols.show('ip') && <th className="py-2.5 px-4 font-semibold">IP</th>}
               <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredPods.length === 0 ? (
               <tr>
-                <td colSpan={12} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={cols.visible.size + 1} className="py-12 text-center text-slate-500 italic">
                   No pods found matching query.
                 </td>
               </tr>
@@ -259,7 +284,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
                       />
                     </td>
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
-                      <span className="truncate max-w-xs group-hover:text-cyan-300 font-semibold transition-colors" title={pod.metadata.name}>
+                      <span className="truncate max-w-xs group-hover:text-cyan-300 font-semibold transition-colors" title={`${pod.metadata.namespace}/${pod.metadata.name}`}>
                         {pod.metadata.name}
                       </span>
                       {podForwards.length > 0 && (
@@ -276,12 +301,14 @@ export const PodsView: React.FC<PodsViewProps> = ({
                         </span>
                       )}
                     </td>
-                    <td className="py-2.5 px-4 text-slate-400">
-                      <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
-                        {pod.metadata.namespace}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4">
+                    {cols.show('namespace') && (
+                      <td className="py-2.5 px-4 text-slate-400">
+                        <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
+                          {pod.metadata.namespace}
+                        </span>
+                      </td>
+                    )}
+                    {cols.show('image') && <td className="py-2.5 px-4">
                       {(() => {
                         const firstImg = pod.spec.containers[0]?.image || '';
                         const { tag } = parseImageTag(firstImg);
@@ -298,28 +325,42 @@ export const PodsView: React.FC<PodsViewProps> = ({
                           </span>
                         );
                       })()}
-                    </td>
-                    <td className="py-2.5 px-4">
-                      {getPhaseBadge(pod.status.phase)}
-                    </td>
-                    <td className="py-2.5 px-4">
-                      <span className={`${readyContainers === totalContainers ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {readyContainers}/{totalContainers}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4">
-                      <span className={totalRestarts > 0 ? 'text-amber-400 font-bold' : 'text-slate-400'}>
-                        {totalRestarts}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4 text-sky-300 whitespace-nowrap">{usage?.cpu ?? <span className="text-slate-600">—</span>}</td>
-                    <td className="py-2.5 px-4 text-violet-300 whitespace-nowrap">{usage?.memory ?? <span className="text-slate-600">—</span>}</td>
-                    <td className="py-2.5 px-4 text-slate-400 truncate max-w-[140px]" title={pod.spec.nodeName}>
-                      {pod.spec.nodeName || 'N/A'}
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-400">
-                      {pod.status.podIP || 'N/A'}
-                    </td>
+                    </td>}
+                    {cols.show('status') && (
+                      <td className="py-2.5 px-4">
+                        {getPhaseBadge(pod.status.phase)}
+                      </td>
+                    )}
+                    {cols.show('ready') && (
+                      <td className="py-2.5 px-4">
+                        <span className={`${readyContainers === totalContainers ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {readyContainers}/{totalContainers}
+                        </span>
+                      </td>
+                    )}
+                    {cols.show('restarts') && (
+                      <td className="py-2.5 px-4">
+                        <span className={totalRestarts > 0 ? 'text-amber-400 font-bold' : 'text-slate-400'}>
+                          {totalRestarts}
+                        </span>
+                      </td>
+                    )}
+                    {cols.show('cpu') && (
+                      <td className="py-2.5 px-4 text-sky-300 whitespace-nowrap">{usage?.cpu ?? <span className="text-slate-600">—</span>}</td>
+                    )}
+                    {cols.show('memory') && (
+                      <td className="py-2.5 px-4 text-violet-300 whitespace-nowrap">{usage?.memory ?? <span className="text-slate-600">—</span>}</td>
+                    )}
+                    {cols.show('node') && (
+                      <td className="py-2.5 px-4 text-slate-400 truncate max-w-[140px]" title={pod.spec.nodeName}>
+                        {pod.spec.nodeName || 'N/A'}
+                      </td>
+                    )}
+                    {cols.show('ip') && (
+                      <td className="py-2.5 px-4 text-slate-400">
+                        {pod.status.podIP || 'N/A'}
+                      </td>
+                    )}
                     <td className="py-2.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1 select-none font-sans">
                         {/* Port Forward / Details */}

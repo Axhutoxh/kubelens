@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   Layers, 
   Sliders, 
@@ -12,7 +12,81 @@ import {
   Rows3
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
+import { PodMetric } from '../api/client';
 import { RolloutHistoryModal } from '../components/RolloutHistoryModal';
+import { ColumnDef, ColumnPicker, useColumnVisibility } from '../components/ColumnPicker';
+
+const DEPLOYMENT_COLUMNS: ColumnDef[] = [
+  { id: 'name', label: 'Name', locked: true },
+  { id: 'namespace', label: 'Namespace' },
+  { id: 'image', label: 'Image Tag' },
+  { id: 'status', label: 'Status' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'cpu', label: 'CPU' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'uptodate', label: 'Up-to-date' },
+  { id: 'available', label: 'Available' },
+  { id: 'actions', label: 'Actions', locked: true },
+];
+const DEPLOYMENT_DEFAULT_COLUMNS = ['name', 'image', 'status', 'ready', 'cpu', 'memory', 'actions'];
+
+// Kubernetes builds pod-template hashes and pod suffixes from this alphabet (no vowels),
+// which lets us attribute "<deployment>-<hash>-<suffix>" pods without false matches.
+const SAFE_CHARS = /^[bcdfghjklmnpqrstvwxz2456789]+$/;
+
+/** Maps a ReplicaSet-managed pod name back to its deployment name, or null. */
+function deploymentOfPod(podName: string): string | null {
+  const parts = podName.split('-');
+  if (parts.length < 3) return null;
+  const suffix = parts[parts.length - 1];
+  const hash = parts[parts.length - 2];
+  if (suffix.length !== 5 || !SAFE_CHARS.test(suffix)) return null;
+  if (hash.length < 6 || hash.length > 10 || !SAFE_CHARS.test(hash)) return null;
+  return parts.slice(0, -2).join('-');
+}
+
+function cpuMillis(q: string): number {
+  if (q.endsWith('n')) return parseFloat(q) / 1e6;
+  if (q.endsWith('u')) return parseFloat(q) / 1e3;
+  if (q.endsWith('m')) return parseFloat(q);
+  return parseFloat(q) * 1000;
+}
+
+function memoryMi(q: string): number {
+  const units: Record<string, number> = { Ki: 1 / 1024, Mi: 1, Gi: 1024, Ti: 1024 * 1024, K: 1000 / 1048576, M: 1e6 / 1048576, G: 1e9 / 1048576 };
+  const m = /^([\d.]+)([A-Za-z]*)$/.exec(q);
+  if (!m) return 0;
+  return parseFloat(m[1]) * (units[m[2]] ?? 1 / 1048576);
+}
+
+const formatCpu = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} cores` : `${Math.round(m)}m`);
+const formatMemory = (mi: number) => (mi >= 1024 ? `${(mi / 1024).toFixed(2)}Gi` : `${Math.round(mi)}Mi`);
+
+type Tone = 'emerald' | 'amber' | 'rose' | 'slate';
+const TONE_CLASSES: Record<Tone, string> = {
+  emerald: 'bg-emerald-950 text-emerald-400 border-emerald-800/80',
+  amber: 'bg-amber-950 text-amber-400 border-amber-800/80',
+  rose: 'bg-rose-950 text-rose-400 border-rose-800/80',
+  slate: 'bg-slate-800 text-slate-400 border-slate-700',
+};
+
+/** Summarises rollout state the way `kubectl rollout status` would read it. */
+function deploymentStatus(dep: DeploymentItem): { label: string; tone: Tone; hint?: string } {
+  const desired = dep.spec.replicas ?? 0;
+  const ready = dep.status.readyReplicas ?? 0;
+  const updated = dep.status.updatedReplicas ?? 0;
+  const available = dep.status.availableReplicas ?? 0;
+  const conditions: Array<{ type: string; status: string; reason?: string; message?: string }> = (dep.status as any).conditions || [];
+  const stalled = conditions.find((c) => c.type === 'Progressing' && c.status === 'False');
+  const failure = conditions.find((c) => c.type === 'ReplicaFailure' && c.status === 'True');
+
+  if (desired === 0) return { label: 'Scaled to 0', tone: 'slate' };
+  if (failure) return { label: 'Failed', tone: 'rose', hint: failure.message };
+  if (stalled) return { label: 'Stalled', tone: 'rose', hint: stalled.message || stalled.reason };
+  if (ready === desired && updated === desired && available >= desired) return { label: 'Running', tone: 'emerald' };
+  if (ready === 0 && available === 0) return { label: 'Unavailable', tone: 'rose' };
+  return { label: 'Progressing', tone: 'amber', hint: `${updated}/${desired} updated, ${available} available` };
+}
 
 interface DeploymentsViewProps {
   deployments: DeploymentItem[];
@@ -25,6 +99,9 @@ interface DeploymentsViewProps {
   onOpenAllLogs?: (dep: DeploymentItem) => void;
   onRefresh?: () => void;
   onToast?: (message: string, type?: 'success' | 'error') => void;
+  /** Pod usage keyed by `${namespace}/${name}`; summed per deployment */
+  podMetrics?: Map<string, PodMetric>;
+  metricsAvailable?: boolean;
 }
 
 export function parseImage(imageStr?: string) {
@@ -67,8 +144,27 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   onOpenAllLogs,
   onRefresh,
   onToast,
+  podMetrics,
+  metricsAvailable,
 }) => {
   const [historyFor, setHistoryFor] = useState<DeploymentItem | null>(null);
+  const cols = useColumnVisibility('deployments', DEPLOYMENT_COLUMNS, DEPLOYMENT_DEFAULT_COLUMNS);
+
+  // Sum pod usage per deployment once per metrics refresh (O(pods), not O(pods × deployments))
+  const usageByDeployment = useMemo(() => {
+    const totals = new Map<string, { cpu: number; memory: number; pods: number }>();
+    podMetrics?.forEach((m) => {
+      const dep = deploymentOfPod(m.name);
+      if (!dep) return;
+      const key = `${m.namespace}/${dep}`;
+      const t = totals.get(key) || { cpu: 0, memory: 0, pods: 0 };
+      t.cpu += cpuMillis(m.cpu);
+      t.memory += memoryMi(m.memory);
+      t.pods += 1;
+      totals.set(key, t);
+    });
+    return totals;
+  }, [podMetrics]);
   const filteredDeployments = deployments.filter((d) => {
     const name = d.metadata.name.toLowerCase();
     const ns = (d.metadata.namespace || '').toLowerCase();
@@ -100,10 +196,13 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
             {filteredDeployments.length} of {deployments.length}
           </span>
         </div>
-        <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-          Displays container images & active image tag versions
-        </span>
+        <ColumnPicker
+          columns={DEPLOYMENT_COLUMNS}
+          visible={cols.visible}
+          onToggle={cols.toggle}
+          onReset={cols.reset}
+          isDefault={cols.isDefault}
+        />
       </div>
 
       {/* Table */}
@@ -112,18 +211,25 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           <thead className="bg-slate-950/80 text-slate-400 sticky top-0 z-10 border-b border-slate-800 select-none backdrop-blur-sm">
             <tr>
               <th className="py-2.5 px-4 font-semibold">Name</th>
-              <th className="py-2.5 px-4 font-semibold">Namespace</th>
-              <th className="py-2.5 px-4 font-semibold">Images & Tags</th>
-              <th className="py-2.5 px-4 font-semibold">Pods (Ready / Desired)</th>
-              <th className="py-2.5 px-4 font-semibold">Up-to-date</th>
-              <th className="py-2.5 px-4 font-semibold">Available</th>
+              {cols.show('namespace') && <th className="py-2.5 px-4 font-semibold">Namespace</th>}
+              {cols.show('image') && <th className="py-2.5 px-4 font-semibold">Image Tag</th>}
+              {cols.show('status') && <th className="py-2.5 px-4 font-semibold">Status</th>}
+              {cols.show('ready') && <th className="py-2.5 px-4 font-semibold" title="Ready / desired pods">Ready</th>}
+              {cols.show('cpu') && (
+                <th className="py-2.5 px-4 font-semibold" title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Total CPU of all pods'}>CPU</th>
+              )}
+              {cols.show('memory') && (
+                <th className="py-2.5 px-4 font-semibold" title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Total memory of all pods'}>Memory</th>
+              )}
+              {cols.show('uptodate') && <th className="py-2.5 px-4 font-semibold">Up-to-date</th>}
+              {cols.show('available') && <th className="py-2.5 px-4 font-semibold">Available</th>}
               <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredDeployments.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={cols.visible.size} className="py-12 text-center text-slate-500 italic">
                   No deployments found.
                 </td>
               </tr>
@@ -135,19 +241,23 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                 const available = dep.status.availableReplicas ?? 0;
                 const isHealthy = ready === desired && desired > 0;
                 const containers = dep.spec?.template?.spec?.containers || [];
+                const status = deploymentStatus(dep);
+                const usage = usageByDeployment.get(`${dep.metadata.namespace}/${dep.metadata.name}`);
 
                 return (
                   <tr key={dep.metadata.uid || dep.metadata.name} className="hover:bg-slate-800/40 transition-colors">
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
-                      <span className="truncate max-w-xs">{dep.metadata.name}</span>
+                      <span className="truncate max-w-xs" title={`${dep.metadata.namespace}/${dep.metadata.name}`}>{dep.metadata.name}</span>
                     </td>
-                    <td className="py-2.5 px-4 text-slate-400">
-                      <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
-                        {dep.metadata.namespace}
-                      </span>
-                    </td>
+                    {cols.show('namespace') && (
+                      <td className="py-2.5 px-4 text-slate-400">
+                        <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px]">
+                          {dep.metadata.namespace}
+                        </span>
+                      </td>
+                    )}
                     {/* Images & Tags Column */}
-                    <td className="py-2.5 px-4">
+                    {cols.show('image') && <td className="py-2.5 px-4">
                       {containers.length === 0 ? (
                         <span className="text-slate-500 italic text-[11px]">No containers</span>
                       ) : (
@@ -161,16 +271,13 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                                 title={`Container: ${c.name || 'default'} | Full Image: ${fullName}`}
                               >
                                 {containers.length > 1 && (
-                                  <span className="text-slate-400 text-[10px] font-mono shrink-0">
+                                  <span className="text-slate-400 text-[10px] font-mono shrink-0 truncate max-w-[90px]" title={`${c.name}: ${imgName}`}>
                                     {c.name}:
                                   </span>
                                 )}
-                                <span className="text-slate-200 truncate font-mono font-medium max-w-[130px]" title={fullName}>
-                                  {imgName}
-                                </span>
-                                <span 
+                                <span
                                   className="bg-indigo-950/90 text-indigo-300 border border-indigo-700/70 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold shrink-0 flex items-center gap-0.5 shadow-sm"
-                                  title={`Tag: ${tag}`}
+                                  title={`${fullName}`}
                                 >
                                   <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
                                   <span className="truncate max-w-[120px]">{tag}</span>
@@ -180,16 +287,38 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                           })}
                         </div>
                       )}
-                    </td>
-                    <td className="py-2.5 px-4">
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                        isHealthy ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/80' : 'bg-amber-950 text-amber-400 border border-amber-800/80'
-                      }`}>
-                        {ready} / {desired}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-300">{updated}</td>
-                    <td className="py-2.5 px-4 text-slate-300">{available}</td>
+                    </td>}
+                    {cols.show('status') && (
+                      <td className="py-2.5 px-4">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold border whitespace-nowrap ${TONE_CLASSES[status.tone]}`}
+                          title={status.hint}
+                        >
+                          {status.label}
+                        </span>
+                      </td>
+                    )}
+                    {cols.show('ready') && (
+                      <td className="py-2.5 px-4">
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap ${
+                          isHealthy ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/80' : 'bg-amber-950 text-amber-400 border border-amber-800/80'
+                        }`}>
+                          {ready} / {desired}
+                        </span>
+                      </td>
+                    )}
+                    {cols.show('cpu') && (
+                      <td className="py-2.5 px-4 text-sky-300 whitespace-nowrap" title={usage ? `${usage.pods} pods` : undefined}>
+                        {usage ? formatCpu(usage.cpu) : <span className="text-slate-600">—</span>}
+                      </td>
+                    )}
+                    {cols.show('memory') && (
+                      <td className="py-2.5 px-4 text-violet-300 whitespace-nowrap" title={usage ? `${usage.pods} pods` : undefined}>
+                        {usage ? formatMemory(usage.memory) : <span className="text-slate-600">—</span>}
+                      </td>
+                    )}
+                    {cols.show('uptodate') && <td className="py-2.5 px-4 text-slate-300">{updated}</td>}
+                    {cols.show('available') && <td className="py-2.5 px-4 text-slate-300">{available}</td>}
                     <td className="py-2.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1 select-none font-sans">
                         {/* Scale */}

@@ -240,7 +240,7 @@ export const App: React.FC = () => {
       if (currentView === 'pods' || currentView === 'overview') {
         promises.push(fetchK8sResource<PodItem>('pods', ns).then((res) => setPods(res.items || [])).catch(() => {}));
       }
-      if (currentView === 'pods') {
+      if (currentView === 'pods' || currentView === 'deployments') {
         // Metrics never block the table: they arrive separately and fail soft
         fetchPodMetrics(ns).then((m) => {
           setMetricsAvailable(m.available);
@@ -638,6 +638,8 @@ export const App: React.FC = () => {
                 handleOpenMultiLogs({ selector, namespace: dep.metadata.namespace || 'default', title: `Logs (${dep.metadata.name}, all pods)` });
               }}
               onRefresh={() => loadResources()}
+              podMetrics={podMetrics}
+              metricsAvailable={metricsAvailable}
               onToast={showToast}
             />
           )}

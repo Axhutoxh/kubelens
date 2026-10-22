@@ -83,7 +83,7 @@ It also refreshes `docs/downloads/kubellens-setup.exe`, the installer served by 
 On **macOS / Linux**, build locally with:
 ```bash
 cd frontend && bun install && cd ..
-bun x @tauri-apps/cli build          # Linux needs libwebkit2gtk-4.1-dev first
+bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 ```
 
 ### Releasing for Windows, macOS and Linux
@@ -116,6 +116,7 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 * **Rollout History & Rollback**: Per-deployment revision list (images, change cause, age) with one-click rollback.
 * **Multi-select Pods**: Checkbox selection with Shift-click ranges; bulk delete, copy names, and **combined logs** from many pods (or every pod of a deployment) in one colour-coded stream.
 * **Command Palette (Ctrl+K)**: Fuzzy-search pods, deployments, services, views, namespaces and contexts.
+* **Column Chooser**: Show or hide table columns on Pods and Deployments (defaults: Name, Image Tag, Status, Ready, CPU, Memory, Actions); remembered per table. Deployments gain Status and per-deployment CPU / memory totals.
 * **Helm Releases**: List releases in any status; view user/all values, manifest, notes and history; roll back or uninstall (uses the local `helm` CLI).
 * **Custom Resources**: Browse every installed CRD, grouped by API group, using each CRD's own printer columns.
 * **Node Maintenance**: Cordon, uncordon and drain (with optional force) from the Nodes view.
