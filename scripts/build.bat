@@ -19,7 +19,7 @@ echo ===================================================
 echo [2/2] Packaging Native Tauri Release and Setup Installer...
 echo ===================================================
 cd /d "%ROOT%"
-call bun x @tauri-apps/cli build --bundles nsis
+call bun x @tauri-apps/cli@2 build --bundles nsis
 if errorlevel 1 (
     echo [ERROR] Tauri build failed!
     exit /b 1

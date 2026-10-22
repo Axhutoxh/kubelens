@@ -51,7 +51,7 @@ jobs:
 
       # Same steps as scripts/build.bat: Tauri runs the frontend build, then packages the installers
       - name: Build Tauri app
-        run: bun x @tauri-apps/cli build ${{ matrix.args }}
+        run: bun x @tauri-apps/cli@2 build ${{ matrix.args }}
 
       # Fixed file names so the website can link to releases/latest/download/<name>
       - name: Collect Windows artifacts
