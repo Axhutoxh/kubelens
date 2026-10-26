@@ -826,6 +826,7 @@ export const App: React.FC = () => {
           onSelectTask={setActiveDockTaskId}
           onCloseTask={handleCloseDockTask}
           onUpdateTask={handleUpdateDockTask}
+          onToast={showToast}
         />
 
         {/* Bottom Status Bar */}

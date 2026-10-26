@@ -75,6 +75,41 @@ const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ resize: { cols, rows } }));
     });
 
+    // Clipboard: Ctrl+C copies when text is selected (otherwise it still sends SIGINT),
+    // Ctrl+Shift+C / Ctrl+Shift+V copy / paste, and Ctrl+V pastes like a desktop terminal
+    const copySelection = () => {
+      const text = term.getSelection();
+      if (!text) return false;
+      navigator.clipboard?.writeText(text).catch(() => { /* clipboard unavailable */ });
+      term.clearSelection();
+      return true;
+    };
+    const pasteClipboard = () => {
+      navigator.clipboard?.readText().then((text) => { if (text) term.paste(text); }).catch(() => { /* denied */ });
+    };
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || !(e.ctrlKey || e.metaKey) || e.altKey) return true;
+      const key = e.key.toLowerCase();
+      if (key === 'c' && (e.shiftKey || e.metaKey || term.hasSelection())) {
+        copySelection();
+        e.preventDefault();
+        return false;
+      }
+      if (key === 'v') {
+        // Leave the native paste event to xterm (it handles bracketed paste); just stop ^V reaching the PTY
+        return false;
+      }
+      return true;
+    });
+
+    // Right-click copies the selection, or pastes when nothing is selected
+    const host = hostRef.current;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      if (!copySelection()) pasteClipboard();
+    };
+    host.addEventListener('contextmenu', onContextMenu);
+
     // Keep the PTY size in sync with the dock (maximize/minimize, window resize)
     const observer = new ResizeObserver(() => {
       if (!hostRef.current || hostRef.current.offsetParent === null) return;
@@ -83,6 +118,7 @@ const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container
     observer.observe(hostRef.current);
 
     return () => {
+      host.removeEventListener('contextmenu', onContextMenu);
       observer.disconnect();
       dataSub.dispose();
       resizeSub.dispose();

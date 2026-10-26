@@ -17,6 +17,7 @@ async-stream = "0.3"
 rust-embed = "8.12.0"
 mime_guess = "2.0.5"
 portable-pty = "0.9"
+dirs = "6"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
