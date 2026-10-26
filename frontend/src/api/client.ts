@@ -258,6 +258,40 @@ export function rolloutUndo(kind: string, name: string, namespace: string, revis
   return postJson('/k8s/rollout/undo', { kind, name, namespace, revision, context }, 'Rollback failed');
 }
 
+/** `kubectl set image` for several containers of one workload at once (single rollout). */
+export function setImages(
+  kind: string,
+  name: string,
+  namespace: string,
+  images: Array<{ container: string; image: string }>,
+  context?: string
+) {
+  return postJson('/k8s/set-image', { kind, name, namespace, images, context }, 'Failed to update image');
+}
+
+/**
+ * Save a text export. The desktop webview ignores `<a download>`, so when the API runs on this
+ * machine the backend writes into the Downloads folder; a remote browser gets a normal download.
+ * Resolves to the saved path, or null when the browser handled it.
+ */
+export async function saveTextFile(filename: string, content: string): Promise<string | null> {
+  const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  if (isLocal) {
+    const res = await postJson('/files/save', { filename, content }, 'Failed to save file');
+    return res.path as string;
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking synchronously can cancel the download before it starts
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return null;
+}
+
 export function nodeAction(node: string, action: 'cordon' | 'uncordon' | 'drain', force = false, context?: string) {
   return postJson('/node/action', { node, action, force, context }, `Failed to ${action} node`);
 }

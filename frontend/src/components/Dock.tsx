@@ -16,13 +16,14 @@ import {
   Rows3,
   RotateCcw
 } from 'lucide-react';
-import { applyManifest, multiLogsUrl } from '../api/client';
+import { applyManifest, multiLogsUrl, saveTextFile } from '../api/client';
 
 // xterm.js is only downloaded the first time a shell is opened
 const ShellTerminal = lazy(() => import('./ShellTerminal'));
 
 // Upper bound on lines kept in memory per log view (oldest lines are dropped first)
 const MAX_LOG_LINES = 5000;
+const EMPTY_LOGS = { lines: [] as string[], dropped: 0 };
 
 export interface DockTask {
   id: string;
@@ -52,6 +53,7 @@ interface DockProps {
   onSelectTask: (id: string) => void;
   onCloseTask: (id: string) => void;
   onUpdateTask?: (id: string, patch: Partial<DockTask>) => void;
+  onToast?: (message: string, type?: 'success' | 'error') => void;
 }
 
 // Stable colour per pod in combined log views
@@ -91,10 +93,14 @@ export const Dock: React.FC<DockProps> = ({
   onSelectTask,
   onCloseTask,
   onUpdateTask,
+  onToast,
 }) => {
   const activeTask = tasks.find((t) => t.id === activeTaskId) || tasks[0];
 
-  const [logs, setLogs] = useState<string[]>([]);
+  // `dropped` counts lines trimmed off the front so each line keeps a stable React key;
+  // index keys would rewrite every row once the buffer is full and wipe the user's selection
+  const [logBuf, setLogBuf] = useState<{ lines: string[]; dropped: number }>(EMPTY_LOGS);
+  const logs = logBuf.lines;
   const [isFollowing, setIsFollowing] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [selectedContainer, setSelectedContainer] = useState<string>('');
@@ -139,7 +145,7 @@ export const Dock: React.FC<DockProps> = ({
       return;
     }
 
-    setLogs([]);
+    setLogBuf(EMPTY_LOGS);
     let streamUrl: string;
     if (isMulti) {
       streamUrl = multiLogsUrl({
@@ -171,10 +177,12 @@ export const Dock: React.FC<DockProps> = ({
       frame = 0;
       const batch = pending;
       pending = [];
-      setLogs((prev) => {
-        const next = prev.concat(batch);
+      setLogBuf((prev) => {
+        const next = prev.lines.concat(batch);
         // Keep memory bounded on long-running follows
-        return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+        if (next.length <= MAX_LOG_LINES) return { lines: next, dropped: prev.dropped };
+        const excess = next.length - MAX_LOG_LINES;
+        return { lines: next.slice(excess), dropped: prev.dropped + excess };
       });
     };
 
@@ -196,6 +204,9 @@ export const Dock: React.FC<DockProps> = ({
   // Auto-scroll
   useEffect(() => {
     if (isFollowing && logsEndRef.current) {
+      // Don't yank the view away while the user is selecting text in the log pane
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && logsEndRef.current.parentElement?.contains(sel.anchorNode)) return;
       // Instant scroll: smooth scrolling can't keep up with a fast stream and lags behind
       logsEndRef.current.scrollIntoView({ block: 'end' });
     }
@@ -215,14 +226,19 @@ export const Dock: React.FC<DockProps> = ({
     }
   };
 
-  const handleDownloadLogs = () => {
-    const blob = new Blob([logs.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${activeTask?.pod || activeTask?.title.replace(/[^a-z0-9-]+/gi, '_') || 'logs'}.log`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleDownloadLogs = async () => {
+    if (logs.length === 0) {
+      onToast?.('No log lines to download yet', 'error');
+      return;
+    }
+    const base = activeTask?.pod || activeTask?.title.replace(/[^a-z0-9-]+/gi, '_') || 'logs';
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    try {
+      const path = await saveTextFile(`${base}_${stamp}.log`, logs.join('\n') + '\n');
+      onToast?.(path ? `Saved ${logs.length} lines to ${path}` : `Downloading ${logs.length} lines`);
+    } catch (err: any) {
+      onToast?.(`Download failed: ${err.message}`, 'error');
+    }
   };
 
   const shellTasks = tasks.filter((t) => t.type === 'shell');
@@ -232,9 +248,10 @@ export const Dock: React.FC<DockProps> = ({
   if (!isOpen && shellTasks.length === 0) return null;
 
   const isLogLike = activeTask.type === 'logs' || activeTask.type === 'multilogs';
-  const filteredLogs = logFilter
-    ? logs.filter((l) => l.toLowerCase().includes(logFilter.toLowerCase()))
-    : logs;
+  const filterLower = logFilter.toLowerCase();
+  const filteredLogs = logs
+    .map((line, i) => ({ line, key: logBuf.dropped + i }))
+    .filter(({ line }) => !filterLower || line.toLowerCase().includes(filterLower));
 
   const tabIcon = (type: DockTask['type']) => {
     switch (type) {
@@ -362,7 +379,7 @@ export const Dock: React.FC<DockProps> = ({
 
               {/* Clear logs */}
               <button
-                onClick={() => setLogs([])}
+                onClick={() => setLogBuf(EMPTY_LOGS)}
                 className="p-1 rounded text-slate-400 hover:text-slate-200"
                 title="Clear Logs Console"
               >
@@ -414,7 +431,8 @@ export const Dock: React.FC<DockProps> = ({
       {/* Dock Content Body */}
       <div className="flex-1 overflow-hidden relative">
         {isLogLike && (
-          <div className="h-full overflow-auto p-3 font-mono text-xs text-slate-300 leading-relaxed bg-slate-950 selection:bg-cyan-500/30">
+          // The app disables text selection on <body>; log output must stay selectable / copyable
+          <div className="h-full overflow-auto p-3 font-mono text-xs text-slate-300 leading-relaxed bg-slate-950 select-text cursor-text selection:bg-cyan-500/30">
             {filteredLogs.length === 0 ? (
               <div className="text-slate-600 italic">
                 Waiting for log stream from {activeTask.type === 'multilogs'
@@ -422,8 +440,8 @@ export const Dock: React.FC<DockProps> = ({
                   : activeTask.pod}...
               </div>
             ) : (
-              filteredLogs.map((line, idx) => (
-                <LogLine key={idx} line={line} combined={activeTask.type === 'multilogs'} />
+              filteredLogs.map(({ line, key }) => (
+                <LogLine key={key} line={line} combined={activeTask.type === 'multilogs'} />
               ))
             )}
             <div ref={logsEndRef} />

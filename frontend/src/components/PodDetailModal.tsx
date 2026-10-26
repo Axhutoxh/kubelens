@@ -155,6 +155,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
   const [isSavingEnv, setIsSavingEnv] = useState<boolean>(false);
   const [showAllValues, setShowAllValues] = useState<boolean>(false);
   const [isTogglingAll, setIsTogglingAll] = useState<boolean>(false);
+  const [isCopyingAll, setIsCopyingAll] = useState<boolean>(false);
 
   // Secret & ConfigMap inspection / reveal state (Lens style)
   const [secretCache, setSecretCache] = useState<Record<string, any>>({});
@@ -261,6 +262,102 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
     }
   };
 
+  // Fetch every secret / configmap referenced by `envs` that isn't cached yet.
+  // Returns the merged caches so callers can read values before state settles.
+  const loadRefSources = async (envs: EditableEnvItem[]) => {
+    const newSecretCache = { ...secretCache };
+    const newConfigMapCache = { ...configMapCache };
+
+    const missing = (type: 'secret' | 'configmap', cache: Record<string, any>) =>
+      Array.from(new Set(envs.filter((e) => e.refType === type && e.refName && !cache[e.refName]).map((e) => e.refName!)));
+    const missingSecrets = missing('secret', newSecretCache);
+    const missingCms = missing('configmap', newConfigMapCache);
+
+    await Promise.all([
+      ...missingSecrets.map(async (sName) => {
+        try {
+          const data = await fetchResourceDetail('secret', sName, podNamespace, context);
+          if (data) newSecretCache[sName] = data;
+        } catch (err) {
+          console.warn(`Failed to fetch secret ${sName}:`, err);
+        }
+      }),
+      ...missingCms.map(async (cmName) => {
+        try {
+          const data = await fetchResourceDetail('configmap', cmName, podNamespace, context);
+          if (data) newConfigMapCache[cmName] = data;
+        } catch (err) {
+          console.warn(`Failed to fetch configmap ${cmName}:`, err);
+        }
+      }),
+    ]);
+
+    if (missingSecrets.length > 0) setSecretCache(newSecretCache);
+    if (missingCms.length > 0) setConfigMapCache(newConfigMapCache);
+    return { secrets: newSecretCache, configMaps: newConfigMapCache };
+  };
+
+  // Resolve a downward-API fieldRef (metadata.name, status.podIP, metadata.labels['app'], ...)
+  const resolveFieldPath = (path: string): string | null => {
+    const m = /^(metadata\.(?:labels|annotations))\['(.+)'\]$/.exec(path);
+    if (m) {
+      const map = m[1] === 'metadata.labels' ? pod.metadata.labels : pod.metadata.annotations;
+      return map?.[m[2]] ?? null;
+    }
+    const val = path.split('.').reduce<any>((obj, k) => (obj == null ? obj : obj[k]), pod);
+    return val == null || typeof val === 'object' ? null : String(val);
+  };
+
+  // Copy every variable of the selected container as KEY=value lines (dotenv style), with
+  // secret / configmap / fieldRef values resolved to what the container actually sees
+  const handleCopyAllEnv = async () => {
+    const envs = editableEnvs.filter((e) => !e.isDeleted && e.name.trim());
+    if (envs.length === 0) return;
+    setIsCopyingAll(true);
+    try {
+      const { secrets, configMaps } = await loadRefSources(envs);
+      let unresolved = 0;
+      const lines = envs.map((e) => {
+        let val: string | null = null;
+        if (e.refType === 'secret' && e.refName && e.refKey) {
+          const s = secrets[e.refName];
+          const raw = s?.data?.[e.refKey];
+          val = raw !== undefined ? decodeBase64Utf8(raw) : s?.stringData?.[e.refKey] ?? null;
+        } else if (e.refType === 'configmap' && e.refName && e.refKey) {
+          const cm = configMaps[e.refName];
+          const bin = cm?.binaryData?.[e.refKey];
+          val = cm?.data?.[e.refKey] ?? (bin !== undefined ? decodeBase64Utf8(bin) : null);
+        } else if (e.refType === 'field') {
+          const path = /^fieldRef\((.*)\)$/.exec(e.refDetails || '')?.[1];
+          val = path ? resolveFieldPath(path) : null;
+        } else if (e.isRef) {
+          val = null;
+        } else {
+          val = e.value;
+        }
+        if (val === null) {
+          unresolved++;
+          return `# ${e.name}: ${e.refDetails || 'unresolved reference'}`;
+        }
+        // Quote values that a dotenv parser / shell would otherwise split or truncate
+        const needsQuotes = /[\s"'#$`\\]/.test(val);
+        const quoted = needsQuotes ? `"${val.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"` : val;
+        return `${e.name}=${quoted}`;
+      });
+      await navigator.clipboard.writeText(lines.join('\n') + '\n');
+      onToast(
+        unresolved > 0
+          ? `Copied ${envs.length} variables (${unresolved} could not be resolved and were added as comments)`
+          : `Copied ${envs.length} variables with values`,
+        unresolved > 0 ? 'error' : 'success'
+      );
+    } catch (err: any) {
+      onToast(`Copy failed: ${err.message}`, 'error');
+    } finally {
+      setIsCopyingAll(false);
+    }
+  };
+
   // Toggle reveal all / mask all for all environment variables in current view
   const handleToggleRevealAll = async () => {
     const currentEnvs = editableEnvs.length > 0 ? editableEnvs : getContainerAllEnvs(selectedEnvContainer);
@@ -278,54 +375,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
       // REVEAL ALL
       setIsTogglingAll(true);
       try {
-        const newSecretCache = { ...secretCache };
-        const newConfigMapCache = { ...configMapCache };
-
-        // Identify missing secrets in the current container
-        const missingSecrets = Array.from(
-          new Set(
-            currentEnvs
-              .filter((e) => e.refType === 'secret' && e.refName && !newSecretCache[e.refName])
-              .map((e) => e.refName!)
-          )
-        );
-
-        if (missingSecrets.length > 0) {
-          await Promise.all(
-            missingSecrets.map(async (sName) => {
-              try {
-                const data = await fetchResourceDetail('secret', sName, podNamespace, context);
-                if (data) newSecretCache[sName] = data;
-              } catch (err) {
-                console.warn(`Failed to fetch secret ${sName}:`, err);
-              }
-            })
-          );
-          setSecretCache(newSecretCache);
-        }
-
-        // Identify missing configmaps in the current container
-        const missingCms = Array.from(
-          new Set(
-            currentEnvs
-              .filter((e) => e.refType === 'configmap' && e.refName && !newConfigMapCache[e.refName])
-              .map((e) => e.refName!)
-          )
-        );
-
-        if (missingCms.length > 0) {
-          await Promise.all(
-            missingCms.map(async (cmName) => {
-              try {
-                const data = await fetchResourceDetail('configmap', cmName, podNamespace, context);
-                if (data) newConfigMapCache[cmName] = data;
-              } catch (err) {
-                console.warn(`Failed to fetch configmap ${cmName}:`, err);
-              }
-            })
-          );
-          setConfigMapCache(newConfigMapCache);
-        }
+        await loadRefSources(currentEnvs);
 
         setShowAllValues(true);
         const sensitiveMap: Record<string, boolean> = {};
@@ -1403,6 +1453,21 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
 
                     <button
                       type="button"
+                      onClick={handleCopyAllEnv}
+                      disabled={isCopyingAll || editableEnvs.length === 0}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 border border-slate-700/60 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Copy all variables as KEY=value lines (secrets decoded)"
+                    >
+                      {isCopyingAll ? (
+                        <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
+                      ) : (
+                        <Copy className="w-3 h-3 text-cyan-400" />
+                      )}
+                      <span>{isCopyingAll ? 'Copying...' : 'Copy All'}</span>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={handleToggleRevealAll}
                       disabled={isTogglingAll}
                       className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 border border-slate-700/60 transition-colors cursor-pointer disabled:opacity-50"
@@ -1617,6 +1682,20 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                   <span className="text-slate-400 text-[11px]">
                     Showing <strong className="text-slate-200">{filteredEnvs.length}</strong> of {editableEnvs.length} variables
                   </span>
+                  <button
+                    type="button"
+                    onClick={handleCopyAllEnv}
+                    disabled={isCopyingAll || editableEnvs.length === 0}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1.5 border border-slate-700/60 transition-colors cursor-pointer disabled:opacity-50"
+                    title={`Copy all ${editableEnvs.length} variables of "${selectedEnvContainer}" as KEY=value lines (secrets decoded)`}
+                  >
+                    {isCopyingAll ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                    )}
+                    <span>{isCopyingAll ? 'Copying...' : 'Copy All'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleToggleRevealAll}

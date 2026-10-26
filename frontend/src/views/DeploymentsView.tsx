@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { 
   Layers, 
   Sliders, 
@@ -9,11 +9,14 @@ import {
   AlertCircle,
   Tag,
   History,
-  Rows3
+  Rows3,
+  Copy,
+  X
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
 import { PodMetric } from '../api/client';
 import { RolloutHistoryModal } from '../components/RolloutHistoryModal';
+import { SetImageTagModal } from '../components/SetImageTagModal';
 import { ColumnDef, ColumnPicker, useColumnVisibility } from '../components/ColumnPicker';
 
 const DEPLOYMENT_COLUMNS: ColumnDef[] = [
@@ -148,6 +151,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   metricsAvailable,
 }) => {
   const [historyFor, setHistoryFor] = useState<DeploymentItem | null>(null);
+  const [retagTargets, setRetagTargets] = useState<DeploymentItem[] | null>(null);
   const cols = useColumnVisibility('deployments', DEPLOYMENT_COLUMNS, DEPLOYMENT_DEFAULT_COLUMNS);
 
   // Sum pod usage per deployment once per metrics refresh (O(pods), not O(pods × deployments))
@@ -185,6 +189,60 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
     return name.includes(q) || ns.includes(q) || matchesImage;
   });
 
+  // Multi-select (same behaviour as the Pods view): keys survive refreshes, vanished items are ignored
+  const depKey = (d: DeploymentItem) => `${d.metadata.namespace}/${d.metadata.name}`;
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const lastClickedRef = useRef<number | null>(null);
+  const selectedDeployments = useMemo(() => deployments.filter((d) => selected.has(depKey(d))), [deployments, selected]);
+  const visibleSelected = filteredDeployments.filter((d) => selected.has(depKey(d))).length;
+  const allVisibleSelected = filteredDeployments.length > 0 && visibleSelected === filteredDeployments.length;
+
+  const toggleOne = (index: number, shiftKey: boolean) => {
+    const dep = filteredDeployments[index];
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const turnOn = !prev.has(depKey(dep));
+      // Shift-click selects / clears the whole range since the last click
+      if (shiftKey && lastClickedRef.current !== null) {
+        const [a, b] = [lastClickedRef.current, index].sort((x, y) => x - y);
+        for (let i = a; i <= b; i++) {
+          const k = depKey(filteredDeployments[i]);
+          if (turnOn) next.add(k); else next.delete(k);
+        }
+      } else if (turnOn) {
+        next.add(depKey(dep));
+      } else {
+        next.delete(depKey(dep));
+      }
+      return next;
+    });
+    lastClickedRef.current = index;
+  };
+
+  const toggleAllVisible = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) filteredDeployments.forEach((d) => next.delete(depKey(d)));
+      else filteredDeployments.forEach((d) => next.add(depKey(d)));
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelected(new Set());
+    lastClickedRef.current = null;
+  };
+
+  // Esc clears the selection
+  useEffect(() => {
+    if (selected.size === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target as HTMLElement)?.closest?.('input,textarea,[role=dialog]')) clearSelection();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected.size]);
+
   return (
     <div className="h-full flex flex-col overflow-hidden select-text">
       {/* Header */}
@@ -196,20 +254,66 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
             {filteredDeployments.length} of {deployments.length}
           </span>
         </div>
-        <ColumnPicker
-          columns={DEPLOYMENT_COLUMNS}
-          visible={cols.visible}
-          onToggle={cols.toggle}
-          onReset={cols.reset}
-          isDefault={cols.isDefault}
-        />
+        <div className="flex items-center gap-3">
+          {selected.size === 0 && (
+            <span className="text-[11px] text-slate-500 hidden lg:inline">Tip: tick deployments (Shift-click for a range) to set one image tag on all of them</span>
+          )}
+          <ColumnPicker
+            columns={DEPLOYMENT_COLUMNS}
+            visible={cols.visible}
+            onToggle={cols.toggle}
+            onReset={cols.reset}
+            isDefault={cols.isDefault}
+          />
+        </div>
       </div>
+
+      {/* Bulk action bar */}
+      {selectedDeployments.length > 0 && (
+        <div className="px-6 py-2 border-b border-cyan-900/60 bg-cyan-950/30 flex items-center gap-3 text-xs select-none">
+          <span className="text-cyan-300 font-semibold">{selectedDeployments.length} selected</span>
+          <div className="h-4 w-px bg-slate-700" />
+          <button
+            onClick={() => setRetagTargets(selectedDeployments)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-950/70 hover:bg-indigo-900/70 border border-indigo-800 text-indigo-200 transition-colors"
+            title="Set the same image tag on every selected deployment"
+          >
+            <Tag className="w-3.5 h-3.5 text-indigo-400" /> Set image tag
+          </button>
+          <button
+            onClick={() => {
+              navigator.clipboard?.writeText(selectedDeployments.map((d) => d.metadata.name).join('\n'));
+              onToast?.(`Copied ${selectedDeployments.length} deployment names`);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
+          >
+            <Copy className="w-3.5 h-3.5 text-cyan-400" /> Copy names
+          </button>
+          <button
+            onClick={clearSelection}
+            className="ml-auto flex items-center gap-1 px-2 py-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+            title="Clear selection (Esc)"
+          >
+            <X className="w-3.5 h-3.5" /> Clear
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-left text-xs border-collapse">
           <thead className="bg-slate-950/80 text-slate-400 sticky top-0 z-10 border-b border-slate-800 select-none backdrop-blur-sm">
             <tr>
+              <th className="py-2.5 pl-4 pr-1 w-8">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  ref={(el) => { if (el) el.indeterminate = visibleSelected > 0 && !allVisibleSelected; }}
+                  onChange={toggleAllVisible}
+                  className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer align-middle"
+                  aria-label="Select all visible deployments"
+                />
+              </th>
               <th className="py-2.5 px-4 font-semibold">Name</th>
               {cols.show('namespace') && <th className="py-2.5 px-4 font-semibold">Namespace</th>}
               {cols.show('image') && <th className="py-2.5 px-4 font-semibold">Image Tag</th>}
@@ -229,12 +333,12 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
             {filteredDeployments.length === 0 ? (
               <tr>
-                <td colSpan={cols.visible.size} className="py-12 text-center text-slate-500 italic">
+                <td colSpan={cols.visible.size + 1} className="py-12 text-center text-slate-500 italic">
                   No deployments found.
                 </td>
               </tr>
             ) : (
-              filteredDeployments.map((dep) => {
+              filteredDeployments.map((dep, index) => {
                 const desired = dep.spec.replicas ?? 0;
                 const ready = dep.status.readyReplicas ?? 0;
                 const updated = dep.status.updatedReplicas ?? 0;
@@ -243,9 +347,23 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                 const containers = dep.spec?.template?.spec?.containers || [];
                 const status = deploymentStatus(dep);
                 const usage = usageByDeployment.get(`${dep.metadata.namespace}/${dep.metadata.name}`);
+                const isSelected = selected.has(depKey(dep));
 
                 return (
-                  <tr key={dep.metadata.uid || dep.metadata.name} className="hover:bg-slate-800/40 transition-colors">
+                  <tr
+                    key={dep.metadata.uid || dep.metadata.name}
+                    className={`transition-colors ${isSelected ? 'bg-cyan-950/30 hover:bg-cyan-950/50' : 'hover:bg-slate-800/40'}`}
+                  >
+                    <td className="py-2.5 pl-4 pr-1 w-8">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => { /* handled in onClick to read shiftKey */ }}
+                        onClick={(e) => toggleOne(index, e.shiftKey)}
+                        className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer align-middle"
+                        aria-label={`Select ${dep.metadata.name}`}
+                      />
+                    </td>
                     <td className="py-2.5 px-4 font-medium text-slate-100 flex items-center gap-2">
                       <span className="truncate max-w-xs" title={`${dep.metadata.namespace}/${dep.metadata.name}`}>{dep.metadata.name}</span>
                     </td>
@@ -329,6 +447,14 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                         >
                           <Sliders className="w-3.5 h-3.5" />
                         </button>
+                        {/* Set image tag */}
+                        <button
+                          onClick={() => setRetagTargets([dep])}
+                          title="Set Image Tag"
+                          className="p-1 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded transition-colors"
+                        >
+                          <Tag className="w-3.5 h-3.5" />
+                        </button>
                         {/* Rollout Restart */}
                         <button
                           onClick={() => onRestart('deployment', dep.metadata.name, dep.metadata.namespace!)}
@@ -386,6 +512,15 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           deployment={historyFor}
           onClose={() => setHistoryFor(null)}
           onRolledBack={() => onRefresh?.()}
+          onToast={(m, t) => onToast?.(m, t)}
+        />
+      )}
+
+      {retagTargets && (
+        <SetImageTagModal
+          deployments={retagTargets}
+          onClose={() => setRetagTargets(null)}
+          onApplied={() => onRefresh?.()}
           onToast={(m, t) => onToast?.(m, t)}
         />
       )}

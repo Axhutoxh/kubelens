@@ -3,7 +3,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        DefaultBodyLimit, Path, Query, State,
     },
     http::{header, StatusCode},
     response::{
@@ -1228,6 +1228,109 @@ async fn handle_rollout_undo(
 }
 
 // ---------------------------------------------------------------------------
+// Set container images (one or many containers of a workload in a single rollout)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ContainerImage {
+    container: String,
+    image: String,
+}
+
+#[derive(Deserialize)]
+struct SetImageRequest {
+    kind: String,
+    name: String,
+    namespace: String,
+    images: Vec<ContainerImage>,
+    context: Option<String>,
+}
+
+async fn handle_set_image(
+    State(state): State<AppState>,
+    Json(req): Json<SetImageRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if req.images.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "No images given".into()));
+    }
+    if req.images.iter().any(|i| i.container.is_empty() || i.image.trim().is_empty() || i.image.contains(char::is_whitespace)) {
+        return Err((StatusCode::BAD_REQUEST, "Container names and images must be non-empty and contain no spaces".into()));
+    }
+    let current_ctx = state.ctx().await;
+    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
+    let mut args = vec!["set".to_string(), "image".to_string(), format!("{}/{}", req.kind, req.name)];
+    // All containers go in one command so the workload rolls out once, not once per container
+    args.extend(req.images.iter().map(|i| format!("{}={}", i.container, i.image.trim())));
+    args.extend(["-n".to_string(), req.namespace.clone()]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let out = run_kubectl_cmd(&arg_refs, ctx_to_use)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    state.cache.invalidate_prefix(&format!("k8s:{}:", ctx_to_use)).await;
+    state.cache.invalidate_prefix(&format!("detail:{}", ctx_to_use)).await;
+
+    Ok(Json(serde_json::json!({ "success": true, "output": out })))
+}
+
+// ---------------------------------------------------------------------------
+// Save text to the user's Downloads folder. The desktop webview ignores
+// `<a download>` links, so the UI hands exports (logs, …) to the backend instead.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SaveFileRequest {
+    filename: String,
+    content: String,
+}
+
+// Only plain-text exports; a page that reaches the local API must not be able to drop executables
+const SAVE_ALLOWED_EXTENSIONS: &[&str] = &["log", "txt", "yaml", "yml", "json", "env"];
+
+async fn handle_save_file(
+    Json(req): Json<SaveFileRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Keep only the base name and replace characters Windows / macOS / Linux reject
+    let base = req.filename.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"|?*"#.contains(c) { '_' } else { c })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.');
+    let path = std::path::Path::new(clean);
+    let stem = path.file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("export");
+    let ext = path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    if !SAVE_ALLOWED_EXTENSIONS.contains(&ext.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, format!("Unsupported file type '.{}'", ext)));
+    }
+
+    let dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "Could not locate a Downloads folder".to_string()))?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Never overwrite: "name.log", "name (1).log", "name (2).log", …
+    for n in 0..1000 {
+        let file_name = if n == 0 { format!("{}.{}", stem, ext) } else { format!("{} ({}).{}", stem, n, ext) };
+        let target = dir.join(file_name);
+        match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&target).await {
+            Ok(mut f) => {
+                f.write_all(req.content.as_bytes())
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                return Ok(Json(serde_json::json!({ "success": true, "path": target.to_string_lossy() })));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        }
+    }
+    Err((StatusCode::CONFLICT, "Too many files with that name in Downloads".into()))
+}
+
+// ---------------------------------------------------------------------------
 // Node maintenance: cordon / uncordon / drain
 // ---------------------------------------------------------------------------
 
@@ -1835,6 +1938,9 @@ async fn main() {
         .route("/metrics/pods", get(handle_pod_metrics))
         .route("/metrics/nodes", get(handle_node_metrics))
         .route("/k8s/rollout/undo", post(handle_rollout_undo))
+        .route("/k8s/set-image", post(handle_set_image))
+        // Log exports can be several MB; axum's default JSON limit is 2 MB
+        .route("/files/save", post(handle_save_file).layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .route("/node/action", post(handle_node_action))
         .route("/helm/releases", get(handle_helm_releases))
         .route("/helm/release", get(handle_helm_release))
