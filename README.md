@@ -90,7 +90,7 @@ bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.2.0 && git push origin v1.2.0
 ```
 | Platform | Release asset |
 | :--- | :--- |
