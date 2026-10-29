@@ -292,6 +292,11 @@ export async function saveTextFile(filename: string, content: string): Promise<s
   return null;
 }
 
+/** Flash the taskbar / bounce the dock icon if the window is in the background (desktop only). */
+export function requestAttention() {
+  return fetch(`${API_BASE}/attention`, { method: 'POST' }).catch(() => undefined);
+}
+
 export function nodeAction(node: string, action: 'cordon' | 'uncordon' | 'drain', force = false, context?: string) {
   return postJson('/node/action', { node, action, force, context }, `Failed to ${action} node`);
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import {
   X,
   Terminal,
@@ -14,9 +14,15 @@ import {
   Maximize2,
   SquareTerminal,
   Rows3,
-  RotateCcw
+  RotateCcw,
+  Regex,
+  Braces,
+  History,
+  Search
 } from 'lucide-react';
 import { applyManifest, multiLogsUrl, saveTextFile } from '../api/client';
+import { FindBar, HighlightTextarea, findMatches } from './FindInText';
+import { LEVEL_RANK, LogLevel, compileFilter, logLevel, prettyJson, splitMatches } from '../utils/logs';
 
 // xterm.js is only downloaded the first time a shell is opened
 const ShellTerminal = lazy(() => import('./ShellTerminal'));
@@ -24,6 +30,15 @@ const ShellTerminal = lazy(() => import('./ShellTerminal'));
 // Upper bound on lines kept in memory per log view (oldest lines are dropped first)
 const MAX_LOG_LINES = 5000;
 const EMPTY_LOGS = { lines: [] as string[], dropped: 0 };
+
+const SINCE_OPTIONS: Array<[string, string]> = [
+  ['', 'Last 200 lines'],
+  ['5m', 'Last 5 min'],
+  ['15m', 'Last 15 min'],
+  ['1h', 'Last 1 hour'],
+  ['6h', 'Last 6 hours'],
+  ['24h', 'Last 24 hours'],
+];
 
 export interface DockTask {
   id: string;
@@ -66,24 +81,56 @@ const colorFor = (s: string) => {
 // `kubectl logs --prefix` lines look like "[pod/<name>/<container>] message"
 const PREFIX_RE = /^\[pod\/([^/\]]+)\/([^\]]+)\] ?(.*)$/;
 
-const LogLine: React.FC<{ line: string; combined: boolean }> = ({ line, combined }) => {
+const LEVEL_CLASSES: Record<NonNullable<LogLevel>, string> = {
+  error: 'text-rose-300 border-l-2 border-rose-500/70 bg-rose-950/20',
+  warn: 'text-amber-200 border-l-2 border-amber-500/60',
+  debug: 'text-slate-500',
+};
+
+interface LogLineProps {
+  line: string;
+  level: LogLevel;
+  combined: boolean;
+  highlight: RegExp | null;
+  pretty: boolean;
+}
+
+const Highlighted: React.FC<{ text: string; re: RegExp | null }> = ({ text, re }) => (
+  <>
+    {splitMatches(text, re).map((part, i) =>
+      i % 2 ? <mark key={i} className="bg-cyan-400/30 text-inherit rounded-sm">{part}</mark> : part
+    )}
+  </>
+);
+
+// Memoised: with stable keys, a new batch of lines only renders the new rows
+const LogLine = React.memo<LogLineProps>(({ line, level, combined, highlight, pretty }) => {
+  const base = `hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all ${level ? LEVEL_CLASSES[level] : ''}`;
+  if (line.startsWith('[kubellens]')) {
+    return <div className="px-1 text-amber-400/90 whitespace-pre-wrap break-all">{line}</div>;
+  }
+  let prefix: React.ReactNode = null;
+  let message = line;
   if (combined) {
     const m = PREFIX_RE.exec(line);
     if (m) {
-      return (
-        <div className="hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all">
+      prefix = (
+        <>
           <span className={`${colorFor(m[1])} font-semibold`}>{m[1]}</span>
           <span className="text-slate-600">/{m[2]} </span>
-          {m[3]}
-        </div>
+        </>
       );
-    }
-    if (line.startsWith('[kubellens]')) {
-      return <div className="px-1 text-amber-400/90 whitespace-pre-wrap break-all">{line}</div>;
+      message = m[3];
     }
   }
-  return <div className="hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all">{line}</div>;
-};
+  const shown = (pretty && prettyJson(message)) || message;
+  return (
+    <div className={base}>
+      {prefix}
+      <Highlighted text={shown} re={highlight} />
+    </div>
+  );
+});
 
 export const Dock: React.FC<DockProps> = ({
   isOpen,
@@ -105,14 +152,24 @@ export const Dock: React.FC<DockProps> = ({
   const [showTimestamps, setShowTimestamps] = useState(false);
   const [selectedContainer, setSelectedContainer] = useState<string>('');
   const [logFilter, setLogFilter] = useState('');
+  const [useRegex, setUseRegex] = useState(false);
+  const [levelFilter, setLevelFilter] = useState<'all' | 'warn' | 'error'>('all');
+  const [prettyJsonLines, setPrettyJsonLines] = useState(false);
+  const [showPrevious, setShowPrevious] = useState(false);
+  const [since, setSince] = useState('');
   const [isMaximized, setIsMaximized] = useState(false);
 
   // YAML editor state
   const [yamlContent, setYamlContent] = useState('');
   const [applyStatus, setApplyStatus] = useState<{ success?: boolean; message?: string } | null>(null);
   const [isApplying, setIsApplying] = useState(false);
+  const [yamlFindOpen, setYamlFindOpen] = useState(false);
+  const [yamlQuery, setYamlQuery] = useState('');
+  const [yamlCase, setYamlCase] = useState(false);
+  const [yamlActive, setYamlActive] = useState(0);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const logFilterRef = useRef<HTMLInputElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Update container selection and YAML content when active task changes
@@ -123,6 +180,7 @@ export const Dock: React.FC<DockProps> = ({
       setYamlContent(activeTask.content || '');
       setApplyStatus(null);
     } else if (activeTask.type === 'logs') {
+      setShowPrevious(false);
       if (activeTask.container) {
         setSelectedContainer(activeTask.container);
       } else if (activeTask.containers && activeTask.containers.length > 0) {
@@ -161,8 +219,15 @@ export const Dock: React.FC<DockProps> = ({
       if (selectedContainer) url.searchParams.set('container', selectedContainer);
       if (activeTask.context) url.searchParams.set('context', activeTask.context);
       url.searchParams.set('timestamps', showTimestamps ? 'true' : 'false');
-      url.searchParams.set('follow', 'true');
-      url.searchParams.set('tail', '200');
+      url.searchParams.set('follow', showPrevious ? 'false' : 'true');
+      if (showPrevious) url.searchParams.set('previous', 'true');
+      if (since) {
+        url.searchParams.set('since', since);
+        // The whole window, not just its last 200 lines (the buffer cap still applies)
+        url.searchParams.set('tail', '-1');
+      } else {
+        url.searchParams.set('tail', '200');
+      }
       streamUrl = url.toString();
     }
 
@@ -199,7 +264,7 @@ export const Dock: React.FC<DockProps> = ({
       if (frame) cancelAnimationFrame(frame);
       es.close();
     };
-  }, [isOpen, activeTask?.id, activeTask?.type, activeTask?.pod, activeTask?.namespace, activeTask?.context, activeTask?.targets, activeTask?.selector, selectedContainer, showTimestamps]);
+  }, [isOpen, activeTask?.id, activeTask?.type, activeTask?.pod, activeTask?.namespace, activeTask?.context, activeTask?.targets, activeTask?.selector, selectedContainer, showTimestamps, showPrevious, since]);
 
   // Auto-scroll
   useEffect(() => {
@@ -211,6 +276,38 @@ export const Dock: React.FC<DockProps> = ({
       logsEndRef.current.scrollIntoView({ block: 'end' });
     }
   }, [logs, isFollowing]);
+
+  const filter = useMemo(() => compileFilter(logFilter, useRegex), [logFilter, useRegex]);
+
+  // Severity per line is computed once per line, not on every render
+  const levelCache = useRef(new Map<number, LogLevel>());
+  useEffect(() => { levelCache.current = new Map(); }, [activeTask?.id, showPrevious, since, selectedContainer]);
+  const visibleLogs = useMemo(() => {
+    const cache = levelCache.current;
+    const keepLevel = LEVEL_RANK[levelFilter];
+    const out: Array<{ line: string; key: number; level: LogLevel }> = [];
+    logs.forEach((line, i) => {
+      const key = logBuf.dropped + i;
+      let level = cache.get(key);
+      if (level === undefined) {
+        level = logLevel(line);
+        cache.set(key, level);
+      }
+      // The app's own notices (kubectl errors, stream ended) are never filtered away
+      const notice = line.startsWith('[kubellens]');
+      if (!notice && !keepLevel(level)) return;
+      if (!notice && filter.test && !filter.test.test(line)) return;
+      out.push({ line, key, level });
+    });
+    // Forget levels of lines that fell out of the buffer
+    if (cache.size > MAX_LOG_LINES * 2) {
+      for (const k of cache.keys()) if (k < logBuf.dropped) cache.delete(k);
+    }
+    return out;
+  }, [logs, logBuf.dropped, filter, levelFilter]);
+
+  const yamlMatches = useMemo(() => findMatches(yamlContent, yamlQuery, { caseSensitive: yamlCase }).length, [yamlContent, yamlQuery, yamlCase]);
+  useEffect(() => setYamlActive(0), [yamlQuery, yamlCase]);
 
   const handleApply = async () => {
     if (!yamlContent.trim()) return;
@@ -234,7 +331,7 @@ export const Dock: React.FC<DockProps> = ({
     const base = activeTask?.pod || activeTask?.title.replace(/[^a-z0-9-]+/gi, '_') || 'logs';
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     try {
-      const path = await saveTextFile(`${base}_${stamp}.log`, logs.join('\n') + '\n');
+      const path = await saveTextFile(`${base}${showPrevious ? '_previous' : ''}_${stamp}.log`, logs.join('\n') + '\n');
       onToast?.(path ? `Saved ${logs.length} lines to ${path}` : `Downloading ${logs.length} lines`);
     } catch (err: any) {
       onToast?.(`Download failed: ${err.message}`, 'error');
@@ -248,10 +345,19 @@ export const Dock: React.FC<DockProps> = ({
   if (!isOpen && shellTasks.length === 0) return null;
 
   const isLogLike = activeTask.type === 'logs' || activeTask.type === 'multilogs';
-  const filterLower = logFilter.toLowerCase();
-  const filteredLogs = logs
-    .map((line, i) => ({ line, key: logBuf.dropped + i }))
-    .filter(({ line }) => !filterLower || line.toLowerCase().includes(filterLower));
+  const isSingleLogs = activeTask.type === 'logs';
+
+  // Ctrl+F inside the dock: find in the YAML editor, or focus the log filter
+  const onDockKeyDown = (e: React.KeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f') return;
+    if (activeTask.type === 'manifest') {
+      e.preventDefault();
+      setYamlFindOpen(true);
+    } else if (isLogLike) {
+      e.preventDefault();
+      logFilterRef.current?.select();
+    }
+  };
 
   const tabIcon = (type: DockTask['type']) => {
     switch (type) {
@@ -262,15 +368,19 @@ export const Dock: React.FC<DockProps> = ({
     }
   };
 
+  const toggleBtn = (on: boolean) =>
+    `p-1 rounded transition-colors ${on ? 'text-cyan-300 bg-slate-800' : 'text-slate-400 hover:text-slate-200'}`;
+
   return (
     <div
+      onKeyDown={onDockKeyDown}
       className={`border-t border-slate-800 bg-slate-950 flex-col z-30 transition-all ${
         isOpen ? 'flex' : 'hidden'
       } ${isMaximized ? 'h-[75vh]' : 'h-72'}`}
     >
       {/* Dock Tabs Header */}
       <div className="h-9 border-b border-slate-800 bg-slate-900/90 px-3 flex items-center justify-between gap-4 select-none shrink-0">
-        
+
         {/* Dynamic Task Tabs */}
         <div className="flex items-center gap-1.5 overflow-x-auto max-w-3xl py-0.5 scrollbar-none">
           {tasks.map((task) => {
@@ -333,79 +443,24 @@ export const Dock: React.FC<DockProps> = ({
             </>
           )}
 
-          {isLogLike && (
+          {activeTask.type === 'manifest' && (
             <>
-              {/* Container selector */}
-              {activeTask.type === 'logs' && activeTask.containers && activeTask.containers.length > 1 && (
-                <select
-                  value={selectedContainer}
-                  onChange={(e) => setSelectedContainer(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 text-[11px] text-slate-300 rounded px-2 py-0.5"
-                >
-                  {activeTask.containers.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              )}
-
-              {/* Log filter input */}
-              <input
-                type="text"
-                placeholder="Filter logs..."
-                value={logFilter}
-                onChange={(e) => setLogFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 text-[11px] text-slate-200 rounded px-2 py-0.5 w-32 focus:outline-none focus:border-cyan-500"
-              />
-
-              {/* Timestamps toggle */}
-              {activeTask.type === 'logs' && (
-                <button
-                  onClick={() => setShowTimestamps(!showTimestamps)}
-                  className={`p-1 rounded text-slate-400 hover:text-slate-200 ${showTimestamps ? 'text-cyan-400 bg-slate-800' : ''}`}
-                  title="Toggle Timestamps"
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              {/* Follow / Auto-scroll toggle */}
               <button
-                onClick={() => setIsFollowing(!isFollowing)}
-                className={`p-1 rounded text-slate-400 hover:text-slate-200 ${isFollowing ? 'text-cyan-400 bg-slate-800' : ''}`}
-                title="Auto-scroll to bottom"
+                onClick={() => setYamlFindOpen((o) => !o)}
+                className={toggleBtn(yamlFindOpen)}
+                title="Find in YAML (Ctrl+F)"
               >
-                <ArrowDown className="w-3.5 h-3.5" />
+                <Search className="w-3.5 h-3.5" />
               </button>
-
-              {/* Clear logs */}
               <button
-                onClick={() => setLogBuf(EMPTY_LOGS)}
-                className="p-1 rounded text-slate-400 hover:text-slate-200"
-                title="Clear Logs Console"
+                onClick={handleApply}
+                disabled={isApplying}
+                className="flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded transition-colors disabled:opacity-50"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Download logs */}
-              <button
-                onClick={handleDownloadLogs}
-                className="p-1 rounded text-slate-400 hover:text-slate-200"
-                title="Download Logs"
-              >
-                <Download className="w-3.5 h-3.5" />
+                <Play className="w-3 h-3 fill-current" />
+                <span>{isApplying ? 'Applying...' : 'Apply Manifest'}</span>
               </button>
             </>
-          )}
-
-          {activeTask.type === 'manifest' && (
-            <button
-              onClick={handleApply}
-              disabled={isApplying}
-              className="flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded transition-colors disabled:opacity-50"
-            >
-              <Play className="w-3 h-3 fill-current" />
-              <span>{isApplying ? 'Applying...' : 'Apply Manifest'}</span>
-            </button>
           )}
 
           {/* Maximize / Minimize Dock */}
@@ -428,20 +483,132 @@ export const Dock: React.FC<DockProps> = ({
         </div>
       </div>
 
+      {/* Log toolbar */}
+      {isLogLike && (
+        <div className="h-8 border-b border-slate-800/80 bg-slate-900/50 px-3 flex items-center gap-2 select-none shrink-0 text-[11px]">
+          {/* Container selector */}
+          {isSingleLogs && activeTask.containers && activeTask.containers.length > 1 && (
+            <select
+              value={selectedContainer}
+              onChange={(e) => setSelectedContainer(e.target.value)}
+              className="bg-slate-950 border border-slate-800 text-slate-300 rounded px-2 py-0.5"
+              title="Container"
+            >
+              {activeTask.containers.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Filter (plain text or regex) */}
+          <div className={`flex items-center bg-slate-950 border rounded ${filter.error ? 'border-rose-600' : 'border-slate-800 focus-within:border-cyan-500'}`}>
+            <input
+              ref={logFilterRef}
+              type="text"
+              placeholder={useRegex ? 'Regex filter… (Ctrl+F)' : 'Filter logs… (Ctrl+F)'}
+              value={logFilter}
+              onChange={(e) => setLogFilter(e.target.value)}
+              title={filter.error}
+              spellCheck={false}
+              className="bg-transparent text-slate-200 px-2 py-0.5 w-44 focus:outline-none font-mono"
+            />
+            <button onClick={() => setUseRegex(!useRegex)} className={toggleBtn(useRegex)} title="Use regular expression">
+              <Regex className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Severity */}
+          <select
+            value={levelFilter}
+            onChange={(e) => setLevelFilter(e.target.value as any)}
+            className="bg-slate-950 border border-slate-800 text-slate-300 rounded px-1.5 py-0.5"
+            title="Show only lines at or above this level"
+          >
+            <option value="all">All levels</option>
+            <option value="warn">Warnings + errors</option>
+            <option value="error">Errors only</option>
+          </select>
+
+          {/* Time range / previous instance (single pod only) */}
+          {isSingleLogs && (
+            <>
+              <select
+                value={since}
+                onChange={(e) => setSince(e.target.value)}
+                className="bg-slate-950 border border-slate-800 text-slate-300 rounded px-1.5 py-0.5"
+                title="Time range"
+              >
+                {SINCE_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+              </select>
+              <button
+                onClick={() => setShowPrevious(!showPrevious)}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${
+                  showPrevious ? 'text-amber-300 border-amber-700 bg-amber-950/50' : 'text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+                title="Logs of the previous container instance (the one that crashed or restarted)"
+              >
+                <History className="w-3.5 h-3.5" />
+                <span>Previous</span>
+              </button>
+              <button onClick={() => setShowTimestamps(!showTimestamps)} className={toggleBtn(showTimestamps)} title="Toggle Timestamps">
+                <Clock className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+
+          <button onClick={() => setPrettyJsonLines(!prettyJsonLines)} className={toggleBtn(prettyJsonLines)} title="Pretty-print JSON log lines">
+            <Braces className="w-3.5 h-3.5" />
+          </button>
+
+          <span className="ml-auto text-slate-500 tabular-nums">
+            {visibleLogs.length === logs.length ? `${logs.length} lines` : `${visibleLogs.length} of ${logs.length} lines`}
+          </span>
+
+          {/* Follow / Auto-scroll toggle */}
+          <button onClick={() => setIsFollowing(!isFollowing)} className={toggleBtn(isFollowing)} title="Auto-scroll to bottom">
+            <ArrowDown className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Clear logs */}
+          <button onClick={() => setLogBuf(EMPTY_LOGS)} className="p-1 rounded text-slate-400 hover:text-slate-200" title="Clear Logs Console">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Download logs */}
+          <button onClick={handleDownloadLogs} className="p-1 rounded text-slate-400 hover:text-slate-200" title="Download Logs">
+            <Download className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Dock Content Body */}
       <div className="flex-1 overflow-hidden relative">
         {isLogLike && (
           // The app disables text selection on <body>; log output must stay selectable / copyable
           <div className="h-full overflow-auto p-3 font-mono text-xs text-slate-300 leading-relaxed bg-slate-950 select-text cursor-text selection:bg-cyan-500/30">
-            {filteredLogs.length === 0 ? (
+            {showPrevious && (
+              <div className="mb-2 px-2 py-1 rounded bg-amber-950/40 border border-amber-900/60 text-amber-300 font-sans text-[11px]">
+                Showing logs of the previous container instance (not live).
+              </div>
+            )}
+            {visibleLogs.length === 0 ? (
               <div className="text-slate-600 italic">
-                Waiting for log stream from {activeTask.type === 'multilogs'
-                  ? (activeTask.selector ? `pods matching ${activeTask.selector}` : `${activeTask.targets?.length || 0} pods`)
-                  : activeTask.pod}...
+                {logs.length > 0
+                  ? 'No lines match the current filter.'
+                  : <>Waiting for log stream from {activeTask.type === 'multilogs'
+                      ? (activeTask.selector ? `pods matching ${activeTask.selector}` : `${activeTask.targets?.length || 0} pods`)
+                      : activeTask.pod}...</>}
               </div>
             ) : (
-              filteredLogs.map(({ line, key }) => (
-                <LogLine key={key} line={line} combined={activeTask.type === 'multilogs'} />
+              visibleLogs.map(({ line, key, level }) => (
+                <LogLine
+                  key={key}
+                  line={line}
+                  level={level}
+                  combined={activeTask.type === 'multilogs'}
+                  highlight={filter.highlight}
+                  pretty={prettyJsonLines}
+                />
               ))
             )}
             <div ref={logsEndRef} />
@@ -469,19 +636,40 @@ export const Dock: React.FC<DockProps> = ({
           <div className="h-full flex flex-col">
             {applyStatus && (
               <div className={`px-4 py-1.5 text-xs flex items-center gap-2 ${
-                applyStatus.success 
-                  ? 'bg-emerald-950/80 text-emerald-300 border-b border-emerald-800' 
+                applyStatus.success
+                  ? 'bg-emerald-950/80 text-emerald-300 border-b border-emerald-800'
                   : 'bg-rose-950/80 text-rose-300 border-b border-rose-800'
               }`}>
                 {applyStatus.success ? <CheckCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
                 <span className="font-mono truncate">{applyStatus.message}</span>
               </div>
             )}
-            <textarea
+            {yamlFindOpen && (
+              <div className="px-3 py-1.5 border-b border-slate-800 bg-slate-900/60 flex justify-end shrink-0">
+                <FindBar
+                  className="w-96"
+                  autoFocus
+                  query={yamlQuery}
+                  onQueryChange={setYamlQuery}
+                  total={yamlMatches}
+                  active={yamlActive}
+                  onNavigate={(d) => yamlMatches && setYamlActive((i) => (i + d + yamlMatches) % yamlMatches)}
+                  caseSensitive={yamlCase}
+                  onToggleCase={() => setYamlCase((c) => !c)}
+                  onClose={() => { setYamlFindOpen(false); setYamlQuery(''); }}
+                  placeholder="Find in YAML…"
+                />
+              </div>
+            )}
+            <HighlightTextarea
               value={yamlContent}
-              onChange={(e) => setYamlContent(e.target.value)}
-              className="flex-1 w-full bg-slate-950 p-3 font-mono text-xs text-slate-200 resize-none focus:outline-none selection:bg-cyan-500/30"
-              spellCheck={false}
+              onChange={setYamlContent}
+              query={yamlFindOpen ? yamlQuery : ''}
+              findOptions={{ caseSensitive: yamlCase }}
+              activeMatch={yamlFindOpen && yamlMatches ? yamlActive : -1}
+              typography="p-3 font-mono text-xs"
+              containerClassName="flex-1 min-h-0 bg-slate-950"
+              className="h-full text-slate-200 resize-none focus:outline-none selection:bg-cyan-500/30"
               placeholder="Kubernetes YAML manifest..."
             />
           </div>

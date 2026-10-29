@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kubellens — Kubernetes IDE in Rust</title>
-<meta name="description" content="Kubellens: a blazing-fast native Kubernetes IDE built with Rust, Tauri v2, Tokio, Axum and React 19. 25 MB RAM, instant startup, zero Electron." />
+<meta name="description" content="Kubellens: a blazing-fast native Kubernetes IDE built with Rust, Tauri v2, Tokio, Axum and React 19. Pod shell, smart logs, bulk image tags with live rollouts, cluster-to-cluster diffs and pod alerts in ~30 MB of RAM. Zero Electron." />
 <meta property="og:title" content="Kubellens — Kubernetes IDE in Rust" />
 <meta property="og:description" content="Native Kubernetes desktop IDE. Starts in under 50 ms, runs in ~30 MB of RAM." />
 <meta property="og:image" content="assets/logo.png" />
@@ -316,7 +316,7 @@
 <header class="hero">
   <div class="wrap">
     <div>
-      <div class="pill"><span class="dot"></span><b>v1.2.0</b> Windows · macOS · Linux · Zero Electron</div>
+      <div class="pill"><span class="dot"></span><b>v1.3.0</b> Windows · macOS · Linux · Zero Electron</div>
       <div class="logo-orbit">
         <svg viewBox="0 0 132 132" fill="none">
           <circle cx="66" cy="66" r="62" stroke="url(#g1)" stroke-width="1.5" stroke-dasharray="4 10" />
@@ -786,6 +786,12 @@
   /* ---- features ---- */
   const icon = p => `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const feats = [
+    ['Bulk image tags + live rollouts', 'Set one tag on many deployments, watch every rollout live, catch image pull failures and undo the whole batch in one click.', '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>'],
+    ['Environment diff', 'Compare two clusters or namespaces side by side: image tags, env, resources and ConfigMaps, key by key.', '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6M18 15V9a3 3 0 0 0-3-3H9"/>'],
+    ['Smarter logs', 'Crashed-container logs, time ranges, colour-coded errors, regex filters, JSON pretty-print and one-click download.', '<path d="M4 6h16M4 12h10M4 18h7"/><path d="m16 16 2 2 4-4"/>'],
+    ['Find in text', 'Ctrl+F inside ConfigMaps and YAML with in-place highlights and a "3 of 12" counter.', '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6"/>'],
+    ['Pod alerts', 'Crash loops, OOM kills, image pull failures and evictions surface the moment they happen.', '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>'],
+    ['Workspaces', 'Save cluster + namespace + view + filter and jump back in one click.', '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'],
     ['Pod shell', 'A real terminal inside any container: bash, vim, top and tab completion over a native PTY.', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>'],
     ['Live CPU & memory', 'Per-pod usage columns and per-node utilisation bars from metrics-server.', '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>'],
     ['Rollback in one click', 'Deployment revision history with images and change causes; roll back to any revision.', '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>'],
@@ -801,7 +807,7 @@
     ['Port-forwarding', 'Background session manager with auto-assigned local ports and one-click stop.', '<path d="M4 12h12m0 0-4-4m4 4-4 4"/><path d="M20 4v16"/>'],
     ['Jobs & CronJobs', 'Completions, durations, suspend toggles and “Trigger Job Now”.', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
     ['Storage 3-in-1', 'PVCs, PersistentVolumes and StorageClasses with capacity and binding status.', '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>'],
-    ['ConfigMaps & Secrets', 'Inspect and edit data in place, with Base64 encode/decode built in.', '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'],
+    ['ConfigMaps & Secrets', 'Edit in place, review a diff before applying, then restart the workloads that use it. Base64 built in.', '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'],
     ['Networking', 'Services, cluster IPs, port mappings, Ingress routing rules and TLS hosts.', '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'],
   ];
   $('#feature-grid').innerHTML = feats.map(([t, p, i], k) =>
@@ -850,7 +856,7 @@
       ['<span class="c">[1/2] Compiling React 19 Frontend Dashboard…</span>', 0],
       ['  vite v6 building for production…  <span class="p">✓</span> 254 KB initial (lazy views)', 0],
       ['<span class="c">[2/2] Packaging Native Tauri Release…</span>', 0],
-      ['  <span class="o">Compiling</span> freelens-rust v1.2.0 (release, lto=fat)', 0],
+      ['  <span class="o">Compiling</span> freelens-rust v1.3.0 (release, lto=fat)', 0],
       ['  <span class="p">Finished</span> release in 1m 42s', 0],
       ['  <span class="p">✓</span> release\\kubellens-setup.exe', 0],
       ['<span class="p">PS&gt;</span> <span class="k">.\\release\\kubellens.exe</span>', 30],

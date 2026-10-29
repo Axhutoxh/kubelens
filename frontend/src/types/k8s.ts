@@ -106,6 +106,9 @@ export interface ContainerStatus {
     waiting?: { reason?: string; message?: string };
     terminated?: { exitCode?: number; reason?: string; finishedAt?: string };
   };
+  lastState?: {
+    terminated?: { exitCode?: number; reason?: string; finishedAt?: string };
+  };
 }
 
 export interface PodCondition {

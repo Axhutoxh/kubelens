@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { SecretItem } from '../types/k8s';
 import { applyManifest } from '../api/client';
+import { RestartDependents } from './RestartDependents';
 
 export function decodeBase64(b64: string): string {
   if (!b64) return '';
@@ -269,6 +270,9 @@ export const SecretDetailModal: React.FC<SecretDetailModalProps> = ({
     setSaveError(null);
   };
 
+  // After a save: offer to restart the workloads that read this secret
+  const [justSaved, setJustSaved] = useState(false);
+
   // Save & Apply Secret to Kubernetes
   const handleSaveSecret = async () => {
     if (!secret) return;
@@ -311,7 +315,7 @@ export const SecretDetailModal: React.FC<SecretDetailModalProps> = ({
 
       onToast?.(`Secret "${secret.metadata.name}" saved and applied successfully!`, 'success');
       onSaveSuccess?.();
-      onClose();
+      setJustSaved(true);
     } catch (err: any) {
       setSaveError(err.message || 'Failed to save secret');
       onToast?.(err.message || 'Failed to save secret', 'error');
@@ -705,6 +709,29 @@ export const SecretDetailModal: React.FC<SecretDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {justSaved && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-6">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-5 space-y-4">
+            <div className="text-sm font-semibold text-emerald-300">Saved {secret.metadata.name}</div>
+            <RestartDependents
+              refKind="secret"
+              refName={secret.metadata.name}
+              namespace={secret.metadata.namespace || 'default'}
+              context={currentContext}
+              onToast={onToast}
+            />
+            <div className="flex justify-end">
+              <button
+                onClick={() => { setJustSaved(false); onClose(); }}
+                className="px-4 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold text-xs"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

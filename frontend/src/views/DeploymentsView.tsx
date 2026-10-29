@@ -11,7 +11,8 @@ import {
   History,
   Rows3,
   Copy,
-  X
+  X,
+  AlertTriangle
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
 import { PodMetric } from '../api/client';
@@ -169,7 +170,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
     });
     return totals;
   }, [podMetrics]);
-  const filteredDeployments = deployments.filter((d) => {
+  const filteredDeployments = useMemo(() => deployments.filter((d) => {
     const name = d.metadata.name.toLowerCase();
     const ns = (d.metadata.namespace || '').toLowerCase();
     const q = searchQuery.toLowerCase();
@@ -187,18 +188,42 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
     });
 
     return name.includes(q) || ns.includes(q) || matchesImage;
-  });
+  }), [deployments, searchQuery]);
+
+  // Release drift: when most visible deployments run the same tag, flag the ones that don't
+  // (e.g. one service left behind on last week's build). Only the main (first) container counts.
+  const [onlyDrift, setOnlyDrift] = useState(false);
+  const drift = useMemo(() => {
+    const tagOf = (d: DeploymentItem) => {
+      const img = d.spec?.template?.spec?.containers?.[0]?.image;
+      return img && !img.includes('@') ? parseImage(img).tag : null;
+    };
+    const counts = new Map<string, number>();
+    filteredDeployments.forEach((d) => {
+      const t = tagOf(d);
+      if (t) counts.set(t, (counts.get(t) || 0) + 1);
+    });
+    const [dominant, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] || ['', 0];
+    const tagged = [...counts.values()].reduce((a, b) => a + b, 0);
+    // Needs a real majority on a group of 3+, otherwise there is no "expected" tag
+    if (count < 3 || count / tagged < 0.5 || count === tagged) return { dominant: '', count: 0, keys: new Set<string>() };
+    const keys = new Set(filteredDeployments.filter((d) => { const t = tagOf(d); return t && t !== dominant; }).map((d) => `${d.metadata.namespace}/${d.metadata.name}`));
+    return { dominant, count, keys };
+  }, [filteredDeployments]);
+  const shownDeployments = onlyDrift && drift.keys.size > 0
+    ? filteredDeployments.filter((d) => drift.keys.has(`${d.metadata.namespace}/${d.metadata.name}`))
+    : filteredDeployments;
 
   // Multi-select (same behaviour as the Pods view): keys survive refreshes, vanished items are ignored
   const depKey = (d: DeploymentItem) => `${d.metadata.namespace}/${d.metadata.name}`;
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const lastClickedRef = useRef<number | null>(null);
   const selectedDeployments = useMemo(() => deployments.filter((d) => selected.has(depKey(d))), [deployments, selected]);
-  const visibleSelected = filteredDeployments.filter((d) => selected.has(depKey(d))).length;
-  const allVisibleSelected = filteredDeployments.length > 0 && visibleSelected === filteredDeployments.length;
+  const visibleSelected = shownDeployments.filter((d) => selected.has(depKey(d))).length;
+  const allVisibleSelected = shownDeployments.length > 0 && visibleSelected === shownDeployments.length;
 
   const toggleOne = (index: number, shiftKey: boolean) => {
-    const dep = filteredDeployments[index];
+    const dep = shownDeployments[index];
     setSelected((prev) => {
       const next = new Set(prev);
       const turnOn = !prev.has(depKey(dep));
@@ -206,7 +231,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
       if (shiftKey && lastClickedRef.current !== null) {
         const [a, b] = [lastClickedRef.current, index].sort((x, y) => x - y);
         for (let i = a; i <= b; i++) {
-          const k = depKey(filteredDeployments[i]);
+          const k = depKey(shownDeployments[i]);
           if (turnOn) next.add(k); else next.delete(k);
         }
       } else if (turnOn) {
@@ -222,8 +247,8 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   const toggleAllVisible = () => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (allVisibleSelected) filteredDeployments.forEach((d) => next.delete(depKey(d)));
-      else filteredDeployments.forEach((d) => next.add(depKey(d)));
+      if (allVisibleSelected) shownDeployments.forEach((d) => next.delete(depKey(d)));
+      else shownDeployments.forEach((d) => next.add(depKey(d)));
       return next;
     });
   };
@@ -251,11 +276,31 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
           <Layers className="w-4 h-4 text-cyan-400" />
           <span className="text-slate-200">Deployments</span>
           <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono text-[11px]">
-            {filteredDeployments.length} of {deployments.length}
+            {shownDeployments.length} of {deployments.length}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          {selected.size === 0 && (
+          {drift.keys.size > 0 && (
+            <button
+              onClick={() => setOnlyDrift((o) => !o)}
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-semibold transition-colors ${
+                onlyDrift ? 'bg-amber-500/20 text-amber-200 border-amber-500/70' : 'bg-amber-950/50 text-amber-300 border-amber-800/80 hover:bg-amber-900/50'
+              }`}
+              title={`${drift.count} deployments run ${drift.dominant}; click to ${onlyDrift ? 'show all' : 'show only the ones that differ'}`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              {drift.keys.size} not on {drift.dominant}
+            </button>
+          )}
+          {onlyDrift && drift.keys.size > 0 && (
+            <button
+              onClick={() => setSelected(new Set(drift.keys))}
+              className="text-[11px] text-cyan-300 hover:text-cyan-200 underline-offset-2 hover:underline"
+            >
+              Select them
+            </button>
+          )}
+          {selected.size === 0 && drift.keys.size === 0 && (
             <span className="text-[11px] text-slate-500 hidden lg:inline">Tip: tick deployments (Shift-click for a range) to set one image tag on all of them</span>
           )}
           <ColumnPicker
@@ -331,14 +376,14 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
-            {filteredDeployments.length === 0 ? (
+            {shownDeployments.length === 0 ? (
               <tr>
                 <td colSpan={cols.visible.size + 1} className="py-12 text-center text-slate-500 italic">
                   No deployments found.
                 </td>
               </tr>
             ) : (
-              filteredDeployments.map((dep, index) => {
+              shownDeployments.map((dep, index) => {
                 const desired = dep.spec.replicas ?? 0;
                 const ready = dep.status.readyReplicas ?? 0;
                 const updated = dep.status.updatedReplicas ?? 0;
@@ -382,6 +427,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                         <div className="space-y-1 max-w-sm py-0.5">
                           {containers.map((c, idx) => {
                             const { fullName, name: imgName, tag } = parseImage(c.image);
+                            const drifted = idx === 0 && drift.keys.has(depKey(dep));
                             return (
                               <div 
                                 key={idx} 
@@ -394,10 +440,13 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
                                   </span>
                                 )}
                                 <span
-                                  className="bg-indigo-950/90 text-indigo-300 border border-indigo-700/70 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold shrink-0 flex items-center gap-0.5 shadow-sm"
-                                  title={`${fullName}`}
+                                  className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-bold shrink-0 flex items-center gap-0.5 shadow-sm border ${
+                                    drifted ? 'bg-amber-950/90 text-amber-300 border-amber-600/80' : 'bg-indigo-950/90 text-indigo-300 border-indigo-700/70'
+                                  }`}
+                                  title={drifted ? `${fullName}
+Differs from ${drift.count} deployments on ${drift.dominant}` : fullName}
                                 >
-                                  <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                                  {drifted ? <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" /> : <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />}
                                   <span className="truncate max-w-[120px]">{tag}</span>
                                 </span>
                               </div>

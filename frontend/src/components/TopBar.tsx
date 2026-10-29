@@ -29,6 +29,8 @@ interface TopBarProps {
   isSmartLensStudioActive?: boolean;
   onToggleSidebar?: () => void;
   isSidebarCollapsed?: boolean;
+  /** Extra controls (alerts, workspaces) shown before the Dock toggle */
+  extraActions?: React.ReactNode;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -48,9 +50,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   isSmartLensStudioActive = false,
   onToggleSidebar,
   isSidebarCollapsed = false,
+  extraActions,
 }) => {
   return (
-    <header className="h-12 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 select-none shrink-0">
+    // z-40: backdrop-blur makes the header its own stacking context, so without a z-index its
+    // dropdowns (workspaces, alerts) would paint underneath the main content
+    <header className="relative z-40 h-12 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 select-none shrink-0">
       {/* Left side: Toggle button + Search Input */}
       <div className="flex-1 max-w-md flex items-center gap-2">
         {onToggleSidebar && (
@@ -155,6 +160,8 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span>{portForwardsCount} Forward{portForwardsCount > 1 ? 's' : ''}</span>
           </button>
         )}
+
+        {extraActions}
 
         {/* Dock Logs/Editor Toggle */}
         <button
