@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Sparkles, 
   ArrowLeftRight, 
@@ -20,7 +20,8 @@ import {
   Sliders,
   Layers,
   Database,
-  Globe
+  Globe,
+  GitCompare
 } from 'lucide-react';
 import { 
   PodItem, 
@@ -35,6 +36,7 @@ import {
   deleteResource 
 } from '../api/client';
 import { PodDetailModal } from '../components/PodDetailModal';
+import { StudioDiff } from '../components/StudioDiff';
 
 interface SmartLensStudioProps {
   contexts: ContextItem[];
@@ -65,6 +67,8 @@ export const SmartLensStudio: React.FC<SmartLensStudioProps> = ({
 }) => {
   // Split ratio: '50-50' | '70-30' | '30-70'
   const [splitRatio, setSplitRatio] = useState<'50-50' | '70-30' | '30-70'>('50-50');
+  // 'browse' = two independent panes, 'diff' = what differs between left and right
+  const [mode, setMode] = useState<'browse' | 'diff'>('browse');
   const [globalFilter, setGlobalFilter] = useState('');
 
   // Determine initial left and right clusters
@@ -140,55 +144,66 @@ export const SmartLensStudio: React.FC<SmartLensStudioProps> = ({
     }
   }, []);
 
+  // Each load gets a sequence number; a slower, older response must not overwrite a newer one
+  // (switching cluster and namespace quickly used to leave one side showing stale data)
+  const leftSeq = useRef(0);
+  const rightSeq = useRef(0);
+
   // Load Left Cluster Data
   const loadLeftData = useCallback(async (cluster = leftCluster, ns = leftNs) => {
     if (!cluster) return;
+    const seq = ++leftSeq.current;
     setIsLeftLoading(true);
     setLeftError(null);
     try {
+      // A failed list must not look like an empty one (the diff would report false differences)
+      const failed: string[] = [];
+      const soft = (kind: string) => (err: any) => { failed.push(`${kind}: ${err.message}`); return { items: [] as any[] }; };
       const [p, d, s, c] = await Promise.all([
-        fetchK8sResource<PodItem>('pods', ns, cluster).catch((err) => {
-          setLeftError(err.message);
-          return { items: [] };
-        }),
-        fetchK8sResource<DeploymentItem>('deployments', ns, cluster).catch(() => ({ items: [] })),
-        fetchK8sResource<ServiceItem>('services', ns, cluster).catch(() => ({ items: [] })),
-        fetchK8sResource<ConfigMapItem>('configmaps', ns, cluster).catch(() => ({ items: [] })),
+        fetchK8sResource<PodItem>('pods', ns, cluster).catch(soft('pods')),
+        fetchK8sResource<DeploymentItem>('deployments', ns, cluster).catch(soft('deployments')),
+        fetchK8sResource<ServiceItem>('services', ns, cluster).catch(soft('services')),
+        fetchK8sResource<ConfigMapItem>('configmaps', ns, cluster).catch(soft('configmaps')),
       ]);
+      if (seq !== leftSeq.current) return;
+      if (failed.length) setLeftError(failed.join(' · '));
       setLeftPods(p.items || []);
       setLeftDeployments(d.items || []);
       setLeftServices(s.items || []);
       setLeftConfigMaps(c.items || []);
     } catch (err: any) {
-      setLeftError(err.message || 'Failed to load left cluster data');
+      if (seq === leftSeq.current) setLeftError(err.message || 'Failed to load left cluster data');
     } finally {
-      setIsLeftLoading(false);
+      if (seq === leftSeq.current) setIsLeftLoading(false);
     }
   }, [leftCluster, leftNs]);
 
   // Load Right Cluster Data
   const loadRightData = useCallback(async (cluster = rightCluster, ns = rightNs) => {
     if (!cluster) return;
+    const seq = ++rightSeq.current;
     setIsRightLoading(true);
     setRightError(null);
     try {
+      // A failed list must not look like an empty one (the diff would report false differences)
+      const failed: string[] = [];
+      const soft = (kind: string) => (err: any) => { failed.push(`${kind}: ${err.message}`); return { items: [] as any[] }; };
       const [p, d, s, c] = await Promise.all([
-        fetchK8sResource<PodItem>('pods', ns, cluster).catch((err) => {
-          setRightError(err.message);
-          return { items: [] };
-        }),
-        fetchK8sResource<DeploymentItem>('deployments', ns, cluster).catch(() => ({ items: [] })),
-        fetchK8sResource<ServiceItem>('services', ns, cluster).catch(() => ({ items: [] })),
-        fetchK8sResource<ConfigMapItem>('configmaps', ns, cluster).catch(() => ({ items: [] })),
+        fetchK8sResource<PodItem>('pods', ns, cluster).catch(soft('pods')),
+        fetchK8sResource<DeploymentItem>('deployments', ns, cluster).catch(soft('deployments')),
+        fetchK8sResource<ServiceItem>('services', ns, cluster).catch(soft('services')),
+        fetchK8sResource<ConfigMapItem>('configmaps', ns, cluster).catch(soft('configmaps')),
       ]);
+      if (seq !== rightSeq.current) return;
+      if (failed.length) setRightError(failed.join(' · '));
       setRightPods(p.items || []);
       setRightDeployments(d.items || []);
       setRightServices(s.items || []);
       setRightConfigMaps(c.items || []);
     } catch (err: any) {
-      setRightError(err.message || 'Failed to load right cluster data');
+      if (seq === rightSeq.current) setRightError(err.message || 'Failed to load right cluster data');
     } finally {
-      setIsRightLoading(false);
+      if (seq === rightSeq.current) setIsRightLoading(false);
     }
   }, [rightCluster, rightNs]);
 
@@ -332,6 +347,18 @@ export const SmartLensStudio: React.FC<SmartLensStudioProps> = ({
 
         {/* View Layout Controls & Swap */}
         <div className="flex items-center gap-2">
+          {/* Browse / Diff */}
+          <button
+            onClick={() => setMode((m) => (m === 'diff' ? 'browse' : 'diff'))}
+            title="Compare deployments (images, env, resources) and ConfigMaps between left and right"
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-colors cursor-pointer ${
+              mode === 'diff' ? 'bg-amber-500/15 text-amber-200 border-amber-500/60' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/80'
+            }`}
+          >
+            <GitCompare className="w-3.5 h-3.5 text-amber-400" />
+            <span>{mode === 'diff' ? 'Back to panes' : 'Diff'}</span>
+          </button>
+
           {/* Swap Button */}
           <button
             onClick={handleSwapPanes}
@@ -369,8 +396,62 @@ export const SmartLensStudio: React.FC<SmartLensStudioProps> = ({
         </div>
       </div>
 
+      {mode === 'diff' && (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-4 py-2 border-b border-slate-800 bg-slate-950/95 flex flex-wrap items-center gap-3 text-xs shrink-0">
+            {([
+              ['Left', 'text-cyan-400 border-cyan-500/40', leftCluster, setLeftCluster, leftNs, setLeftNs, leftNamespaces, isLeftLoading],
+              ['Right', 'text-indigo-400 border-indigo-500/40', rightCluster, setRightCluster, rightNs, setRightNs, rightNamespaces, isRightLoading],
+            ] as const).map(([label, tone, cluster, setCluster, ns, setNs, nsList, loading]) => (
+              <div key={label} className={`flex items-center gap-1.5 bg-slate-900 border rounded-lg px-2 py-1 ${tone}`}>
+                <span className="text-[10px] font-bold uppercase">{label}</span>
+                <select value={cluster} onChange={(e) => setCluster(e.target.value)} className="bg-transparent text-slate-100 font-mono focus:outline-none max-w-[170px]">
+                  {contexts.map((ctx) => <option key={ctx.name} value={ctx.name} className="bg-slate-900">{ctx.name}</option>)}
+                </select>
+                <span className="text-slate-600">/</span>
+                <select value={ns} onChange={(e) => setNs(e.target.value)} className="bg-transparent text-slate-200 font-mono focus:outline-none max-w-[150px]">
+                  {nsList.map((n) => <option key={n} value={n} className="bg-slate-900">{n}</option>)}
+                </select>
+                {loading && <RefreshCw className="w-3 h-3 animate-spin text-slate-400" />}
+              </div>
+            ))}
+            <button
+              onClick={handleSwapPanes}
+              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/80 flex items-center gap-1"
+              title="Swap left and right"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5 text-cyan-400" />
+            </button>
+            {leftCluster === rightCluster && leftNs === rightNs && (
+              <span className="text-amber-300 text-[11px]">Left and right are the same; pick another cluster or namespace.</span>
+            )}
+          </div>
+          {([['Left', leftError, () => loadLeftData(leftCluster, leftNs)], ['Right', rightError, () => loadRightData(rightCluster, rightNs)]] as const).map(([label, err, retry]) =>
+            err ? (
+              <div key={label} className="px-4 py-1.5 border-b border-rose-900/60 bg-rose-950/40 text-[11px] text-rose-300 flex items-center gap-2 shrink-0">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate" title={err}>{label} side failed to load, so the diff may be incomplete: {err}</span>
+                <button onClick={retry} className="ml-auto shrink-0 px-2 py-0.5 rounded border border-rose-800 hover:bg-rose-900/50 text-rose-200">Retry</button>
+              </div>
+            ) : null
+          )}
+          <div className="flex-1 overflow-hidden">
+            <StudioDiff
+              leftLabel={`${leftCluster} / ${leftNs}`}
+              rightLabel={`${rightCluster} / ${rightNs}`}
+              leftDeployments={leftDeployments}
+              rightDeployments={rightDeployments}
+              leftConfigMaps={leftConfigMaps}
+              rightConfigMaps={rightConfigMaps}
+              filter={globalFilter}
+              loading={isLeftLoading || isRightLoading}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Dual Split Panes Container */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className={`flex-1 overflow-hidden ${mode === 'diff' ? 'hidden' : 'flex'}`}>
         
         {/* ================= LEFT PANE ================= */}
         <div className={`${leftWidthClass} flex flex-col border-r border-slate-800 transition-all overflow-hidden`}>

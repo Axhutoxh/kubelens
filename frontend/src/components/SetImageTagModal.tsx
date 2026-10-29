@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { Tag, X, Loader2, CheckCircle2, AlertCircle, ArrowRight } from 'lucide-react';
-import { DeploymentItem } from '../types/k8s';
-import { setImages } from '../api/client';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Tag, X, Loader2, CheckCircle2, AlertCircle, ArrowRight, Undo2, Activity } from 'lucide-react';
+import { DeploymentItem, PodItem } from '../types/k8s';
+import { fetchK8sResource, rolloutUndo, setImages } from '../api/client';
 
 interface SetImageTagModalProps {
   deployments: DeploymentItem[];
@@ -30,6 +30,53 @@ type RowStatus = { state: 'pending' } | { state: 'ok' } | { state: 'error'; mess
 
 const depKey = (d: DeploymentItem) => `${d.metadata.namespace}/${d.metadata.name}`;
 
+// Container states that will not fix themselves; surfaced while a rollout is tracked
+const BAD_WAITING = new Set(['ImagePullBackOff', 'ErrImagePull', 'InvalidImageName', 'CrashLoopBackOff', 'CreateContainerConfigError', 'CreateContainerError', 'RunContainerError']);
+const POLL_MS = 4000;
+const TRACK_TIMEOUT_MS = 15 * 60 * 1000;
+
+interface Progress {
+  desired: number;
+  updated: number;
+  ready: number;
+  available: number;
+  /** Old + new pods; equals `updated` once old ReplicaSet pods are gone */
+  total: number;
+  done: boolean;
+  stalled?: string;
+  /** e.g. "ImagePullBackOff on itam-api-7d9…" */
+  problem?: string;
+}
+
+/** Rollout state the way `kubectl rollout status` decides it. */
+function rolloutProgress(dep: any, pods: PodItem[]): Progress {
+  const desired = dep.spec?.replicas ?? 1;
+  const st = dep.status || {};
+  const updated = st.updatedReplicas ?? 0;
+  const ready = st.readyReplicas ?? 0;
+  const available = st.availableReplicas ?? 0;
+  const total = st.replicas ?? 0;
+  const observed = (st.observedGeneration ?? 0) >= (dep.metadata?.generation ?? 0);
+  const stalledCond = (st.conditions || []).find((c: any) => c.type === 'Progressing' && c.status === 'False');
+  const labels: Record<string, string> = dep.spec?.selector?.matchLabels || {};
+  const own = pods.filter((p) => Object.entries(labels).every(([k, v]) => p.metadata.labels?.[k] === v));
+  let problem: string | undefined;
+  for (const p of own) {
+    const bad = (p.status.containerStatuses || []).find((c) => c.state?.waiting?.reason && BAD_WAITING.has(c.state.waiting.reason));
+    if (bad) { problem = `${bad.state!.waiting!.reason} on ${p.metadata.name}`; break; }
+  }
+  return {
+    desired,
+    updated,
+    ready,
+    available,
+    total,
+    done: observed && updated >= desired && available >= desired && total === updated,
+    stalled: stalledCond ? stalledCond.message || stalledCond.reason : undefined,
+    problem,
+  };
+}
+
 /**
  * Point the same tag at many deployments in one go: every ticked container keeps its
  * repository and gets the new tag; each deployment is updated with a single `kubectl set image`.
@@ -56,6 +103,70 @@ export const SetImageTagModal: React.FC<SetImageTagModalProps> = ({ deployments,
   );
   const [status, setStatus] = useState<Record<string, RowStatus>>({});
   const [isApplying, setIsApplying] = useState(false);
+  // After applying: live rollout progress of the deployments that were changed
+  const [tracked, setTracked] = useState<DeploymentItem[] | null>(null);
+  const [progress, setProgress] = useState<Record<string, Progress>>({});
+  const [trackError, setTrackError] = useState<string | null>(null);
+  const [isUndoing, setIsUndoing] = useState(false);
+  const [undone, setUndone] = useState(false);
+
+  useEffect(() => {
+    if (!tracked || tracked.length === 0) return;
+    let alive = true;
+    const started = Date.now();
+    const namespaces = Array.from(new Set(tracked.map((d) => d.metadata.namespace || 'default')));
+    const poll = async () => {
+      try {
+        const lists = await Promise.all(
+          namespaces.map(async (ns) => {
+            const [deps, pods] = await Promise.all([
+              fetchK8sResource<any>('deployments', ns),
+              fetchK8sResource<PodItem>('pods', ns).catch(() => ({ items: [] as PodItem[] })),
+            ]);
+            return { ns, deps: deps.items || [], pods: pods.items || [] };
+          })
+        );
+        if (!alive) return;
+        const next: Record<string, Progress> = {};
+        for (const d of tracked) {
+          const ns = d.metadata.namespace || 'default';
+          const list = lists.find((l) => l.ns === ns)!;
+          const live = list.deps.find((x: any) => x.metadata.name === d.metadata.name);
+          if (live) next[depKey(d)] = rolloutProgress(live, list.pods);
+        }
+        setProgress(next);
+        setTrackError(null);
+        const allDone = tracked.every((d) => next[depKey(d)]?.done);
+        if (!allDone && Date.now() - started < TRACK_TIMEOUT_MS) timer = window.setTimeout(poll, POLL_MS);
+      } catch (e: any) {
+        if (!alive) return;
+        setTrackError(e.message || 'Failed to read rollout status');
+        timer = window.setTimeout(poll, POLL_MS);
+      }
+    };
+    let timer = window.setTimeout(poll, 1000);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [tracked]);
+
+  const undoAll = async () => {
+    if (!tracked) return;
+    if (!window.confirm(`Roll back all ${tracked.length} deployment(s) to their previous revision?`)) return;
+    setIsUndoing(true);
+    const results = await Promise.allSettled(
+      tracked.map((d) => rolloutUndo('deployment', d.metadata.name, d.metadata.namespace || 'default'))
+    );
+    setIsUndoing(false);
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    setUndone(failed === 0);
+    onApplied();
+    onToast(
+      failed ? `Rolled back ${tracked.length - failed} of ${tracked.length} (${failed} failed)` : `Rolled back ${tracked.length} deployment(s)`,
+      failed ? 'error' : 'success'
+    );
+    // Keep tracking: the rollback is itself a rollout
+    setProgress({});
+    setTracked([...tracked]);
+  };
 
   const trimmed = tag.trim();
   const tagValid = TAG_RE.test(trimmed);
@@ -103,12 +214,96 @@ export const SetImageTagModal: React.FC<SetImageTagModalProps> = ({ deployments,
 
     const failed = results.filter((r) => r.status === 'rejected').length;
     if (failed === 0) {
-      onToast(`Set tag ${trimmed} on ${plan.length} deployment(s)`);
-      onClose();
+      onToast(`Set tag ${trimmed} on ${plan.length} deployment(s); tracking the rollout`);
     } else {
       onToast(`Updated ${plan.length - failed} of ${plan.length} deployments (${failed} failed)`, 'error');
     }
+    // Track the ones that were actually changed
+    const changed = plan.filter((_, i) => results[i].status === 'fulfilled').map((p) => p.dep);
+    if (changed.length > 0) setTracked(changed);
   };
+
+  if (tracked) {
+    const doneCount = tracked.filter((d) => progress[depKey(d)]?.done).length;
+    const problems = tracked.filter((d) => progress[depKey(d)]?.problem || progress[depKey(d)]?.stalled).length;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-6" role="dialog" onClick={onClose}>
+        <div
+          className="w-full max-w-3xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <Activity className="w-4 h-4 text-cyan-400" />
+              <div>
+                <div className="text-sm font-semibold text-slate-100">{undone ? 'Rolling back' : 'Rolling out'} {undone ? '' : <span className="font-mono text-indigo-300">{trimmed}</span>}</div>
+                <div className="text-[11px] text-slate-400">
+                  {doneCount} of {tracked.length} complete{problems > 0 && <span className="text-rose-400"> · {problems} need attention</span>}
+                </div>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800"><X className="w-4 h-4" /></button>
+          </div>
+
+          <div className="flex-1 overflow-auto p-4 space-y-2">
+            {trackError && <div className="text-xs text-rose-300 bg-rose-950/50 border border-rose-900 rounded p-2">{trackError}</div>}
+            {tracked.map((d) => {
+              const p = progress[depKey(d)];
+              const pct = p ? Math.round((Math.min(p.updated, p.desired) / Math.max(1, p.desired)) * 50 + (Math.min(p.available, p.desired) / Math.max(1, p.desired)) * 50) : 0;
+              const issue = p?.problem || p?.stalled;
+              return (
+                <div key={depKey(d)} className={`rounded-lg border p-3 ${issue ? 'border-rose-800/80 bg-rose-950/20' : p?.done ? 'border-emerald-800/60 bg-emerald-950/10' : 'border-slate-800 bg-slate-950/40'}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono text-xs font-semibold text-slate-100 truncate">{d.metadata.name}</span>
+                    {!p ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                    ) : p.done ? (
+                      <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400"><CheckCircle2 className="w-3 h-3" /> Complete</span>
+                    ) : (
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {p.updated}/{p.desired} updated · {p.available} available{p.total > p.updated ? ` · ${p.total - p.updated} old terminating` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${issue ? 'bg-rose-500' : p?.done ? 'bg-emerald-500' : 'bg-cyan-500'}`}
+                      style={{ width: `${p?.done ? 100 : pct}%` }}
+                    />
+                  </div>
+                  {issue && (
+                    <div className="mt-1.5 flex items-center gap-1 text-[11px] text-rose-300">
+                      <AlertCircle className="w-3 h-3 shrink-0" /> <span className="truncate" title={issue}>{issue}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="px-5 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-slate-500">Status refreshes every few seconds. Closing this stops tracking, not the rollout.</span>
+            <div className="flex items-center gap-2">
+              {!undone && (
+                <button
+                  onClick={undoAll}
+                  disabled={isUndoing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-800 hover:bg-amber-900/60 text-amber-300 border border-slate-700 hover:border-amber-700 disabled:opacity-50 transition-colors"
+                  title="kubectl rollout undo for every deployment in this batch"
+                >
+                  {isUndoing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
+                  Undo all
+                </button>
+              )}
+              <button onClick={onClose} className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-100">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-6" role="dialog" onClick={isApplying ? undefined : onClose}>

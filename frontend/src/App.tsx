@@ -6,6 +6,9 @@ import { CreateResourceModal } from './components/CreateResourceModal';
 import { ScaleModal } from './components/ScaleModal';
 import { ViewLoader } from './components/ViewLoader';
 import { CommandPalette } from './components/CommandPalette';
+import { AlertsBell } from './components/AlertsBell';
+import { Workspace, WorkspacesMenu, loadWorkspaces, storeWorkspaces } from './components/WorkspacesMenu';
+import { usePodAlerts } from './hooks/usePodAlerts';
 
 // Views and the (large) pod detail modal are split into their own chunks and only
 // downloaded/parsed when first opened, which keeps startup work small.
@@ -31,6 +34,7 @@ const CustomResourcesView = lazy(() => import('./views/CustomResourcesView').the
 const SELF_LOADING_VIEWS = new Set(['smart-lens-studio', 'helm', 'crds']);
 
 const PALETTE_VIEWS = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ id: i.id, label: i.label.replace(/^⚡\s*/, '') })));
+const viewLabel = (id: string) => PALETTE_VIEWS.find((v) => v.id === id)?.label || id;
 
 const VIEW_LABELS: Record<string, string> = {
   overview: 'cluster overview',
@@ -168,6 +172,43 @@ export const App: React.FC = () => {
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3500);
+  };
+
+  // Pod alerts (crash loops, OOM kills, image pull failures) for the selected namespace
+  const podAlerts = usePodAlerts(selectedNamespace, currentContext, (a) =>
+    showToast(`${a.reason}: ${a.namespace}/${a.pod}${a.container ? ` (${a.container})` : ''}`, 'error')
+  );
+
+  const openAlert = (a: { namespace: string; pod: string }) => {
+    const pod = podAlerts.pods.find((p) => p.metadata.name === a.pod && (p.metadata.namespace || 'default') === a.namespace);
+    if (pod) {
+      setSelectedPod(pod);
+      setSelectedPodContext(undefined);
+      setSelectedPodTab('overview');
+    } else {
+      // The pod is gone (e.g. replaced); show what is left of it
+      setCurrentView('pods');
+      setSearchQuery(a.pod);
+    }
+  };
+
+  // Saved workspaces: cluster + namespace + view + filter
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(loadWorkspaces);
+  const updateWorkspaces = (next: Workspace[]) => {
+    setWorkspaces(next);
+    storeWorkspaces(next);
+  };
+  const saveWorkspace = (name: string) => {
+    const ws: Workspace = { id: `ws-${Date.now()}`, name, context: currentContext, namespace: selectedNamespace, view: currentView, search: searchQuery };
+    // Same name overwrites, so "save again" updates a workspace
+    updateWorkspaces([...workspaces.filter((w) => w.name !== name), ws]);
+    showToast(`Saved workspace "${name}"`);
+  };
+  const applyWorkspace = async (ws: Workspace) => {
+    if (ws.context && ws.context !== currentContext) await handleSwitchContext(ws.context);
+    setSelectedNamespace(ws.namespace);
+    setCurrentView(ws.view);
+    setSearchQuery(ws.search);
   };
 
   const loadPortForwards = useCallback(async () => {
@@ -567,6 +608,29 @@ export const App: React.FC = () => {
           onOpenPortForwards={() => setCurrentView('pods')}
           onOpenSmartLensStudio={() => setCurrentView('smart-lens-studio')}
           isSmartLensStudioActive={currentView === 'smart-lens-studio'}
+          extraActions={
+            <>
+              <WorkspacesMenu
+                workspaces={workspaces}
+                current={{ context: currentContext, namespace: selectedNamespace, view: currentView, search: searchQuery }}
+                viewLabel={viewLabel}
+                onSave={saveWorkspace}
+                onApply={applyWorkspace}
+                onDelete={(id) => updateWorkspaces(workspaces.filter((w) => w.id !== id))}
+              />
+              <AlertsBell
+                alerts={podAlerts.alerts}
+                enabled={podAlerts.settings.enabled}
+                desktop={podAlerts.settings.desktop}
+                onToggleEnabled={() => podAlerts.updateSettings({ enabled: !podAlerts.settings.enabled })}
+                onEnableDesktop={podAlerts.enableDesktop}
+                onDisableDesktop={() => podAlerts.updateSettings({ desktop: false })}
+                onMarkAllRead={podAlerts.markAllRead}
+                onClear={podAlerts.clear}
+                onOpenAlert={openAlert}
+              />
+            </>
+          }
         />
 
         {/* Global Loading Progress Bar */}
@@ -889,6 +953,20 @@ export const App: React.FC = () => {
           { id: 'dock', label: isDockOpen ? 'Hide bottom panel' : 'Show bottom panel', run: () => setIsDockOpen(!isDockOpen) },
           { id: 'sidebar', label: isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', run: toggleSidebar },
           { id: 'clear-search', label: 'Clear search filter', run: () => setSearchQuery('') },
+          {
+            id: 'save-workspace',
+            label: 'Save current view as workspace…',
+            run: () => {
+              const name = window.prompt('Workspace name', `${selectedNamespace === '_all' ? 'all' : selectedNamespace} · ${viewLabel(currentView)}`);
+              if (name?.trim()) saveWorkspace(name.trim());
+            },
+          },
+          ...workspaces.map((w) => ({
+            id: `workspace-${w.id}`,
+            label: `Open workspace: ${w.name}`,
+            hint: `${w.context} · ${w.namespace === '_all' ? 'all namespaces' : w.namespace} · ${viewLabel(w.view)}`,
+            run: () => { applyWorkspace(w); },
+          })),
         ]}
       />
 

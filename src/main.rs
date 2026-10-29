@@ -304,6 +304,10 @@ struct LogsQuery {
     tail: Option<String>,
     follow: Option<String>,
     context: Option<String>,
+    /// Logs of the previous (crashed / restarted) container instance
+    previous: Option<String>,
+    /// Relative window such as "15m" or "2h"
+    since: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -709,8 +713,22 @@ async fn handle_pod_logs(
     if q.timestamps.as_deref() == Some("true") {
         cmd.arg("--timestamps");
     }
-    if q.follow.as_deref() == Some("true") {
+    let previous = q.previous.as_deref() == Some("true");
+    if previous {
+        cmd.arg("--previous");
+    } else if q.follow.as_deref() == Some("true") {
+        // A terminated instance has nothing to follow
         cmd.arg("-f");
+    }
+    if let Some(since) = q.since.as_deref().filter(|s| !s.is_empty()) {
+        let valid = since.len() <= 8
+            && since.ends_with(['s', 'm', 'h'])
+            && since[..since.len() - 1].chars().all(|c| c.is_ascii_digit())
+            && since.len() > 1;
+        if !valid {
+            return Err((StatusCode::BAD_REQUEST, format!("Invalid since '{}' (use e.g. 15m, 2h)", since)));
+        }
+        cmd.arg(format!("--since={}", since));
     }
 
     cmd.stdout(Stdio::piped());
@@ -725,6 +743,7 @@ async fn handle_pod_logs(
         .take()
         .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "No stdout".to_string()))?;
 
+    let stderr = child.stderr.take();
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
@@ -734,6 +753,16 @@ async fn handle_pod_logs(
         let _child = child;
         while let Ok(Some(line)) = lines.next_line().await {
             yield Ok(Event::default().data(line));
+        }
+        // Surface kubectl's error (e.g. "previous terminated container not found")
+        // instead of leaving the pane waiting forever
+        if let Some(err) = stderr {
+            let mut err_lines = BufReader::new(err).lines();
+            while let Ok(Some(line)) = err_lines.next_line().await {
+                if !line.trim().is_empty() {
+                    yield Ok(Event::default().data(format!("[kubellens] {}", line)));
+                }
+            }
         }
     };
 
@@ -1328,6 +1357,24 @@ async fn handle_save_file(
         }
     }
     Err((StatusCode::CONFLICT, "Too many files with that name in Downloads".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Ask for the user's attention (taskbar flash / dock bounce) when an alert fires
+// while the window is in the background. No-op in headless mode.
+// ---------------------------------------------------------------------------
+
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+async fn handle_attention() -> Json<serde_json::Value> {
+    use tauri::Manager;
+    let flashed = APP_HANDLE
+        .get()
+        .and_then(|app| app.get_webview_window("main"))
+        .filter(|win| !win.is_focused().unwrap_or(false))
+        .map(|win| win.request_user_attention(Some(tauri::UserAttentionType::Informational)).is_ok())
+        .unwrap_or(false);
+    Json(serde_json::json!({ "success": true, "flashed": flashed }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1942,6 +1989,7 @@ async fn main() {
         // Log exports can be several MB; axum's default JSON limit is 2 MB
         .route("/files/save", post(handle_save_file).layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .route("/node/action", post(handle_node_action))
+        .route("/attention", post(handle_attention))
         .route("/helm/releases", get(handle_helm_releases))
         .route("/helm/release", get(handle_helm_release))
         .route("/helm/rollback", post(handle_helm_rollback))
@@ -2019,6 +2067,7 @@ async fn main() {
     tauri::Builder::default()
         .setup(move |app_handle| {
             use tauri::Manager;
+            let _ = APP_HANDLE.set(app_handle.handle().clone());
             if let Some(win) = app_handle.get_webview_window("main") {
                 let dev_url = std::env::var("TAURI_DEV_URL").ok();
                 let target_url = dev_url.unwrap_or_else(|| format!("http://localhost:{}", active_port));
