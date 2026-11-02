@@ -1,20 +1,18 @@
-## Kubellens v1.3.0
+## Kubellens v1.5.0: AI assistant
 
-Finding things, shipping releases and comparing environments, without leaving the app.
+Ask Claude or Gemini about your clusters, right inside Kubellens, without giving away your secrets.
 
 ### New
-- **Find in text**: search inside ConfigMap values and the YAML editor (Ctrl+F) with in-place highlights, a "3 of 12" counter and next / previous.
-- **Smarter logs**: previous (crashed) container logs, time ranges, coloured ERROR / WARN lines with an "errors only" filter, regex filter and pretty-printed JSON.
-- **Release drift**: deployments that aren't on the tag their neighbours run are flagged and can be selected in one click.
-- **Live rollout tracking**: after setting an image tag, watch each deployment roll out, see image pull failures and crash loops, and **Undo all** in one click.
-- **Safe ConfigMap edits**: review a diff before applying, then restart the workloads that use the ConfigMap (also after saving a Secret).
-- **Environment diff**: Smart Lens Studio's **Diff** mode compares deployments (images, env, resources) and ConfigMaps between two clusters or namespaces.
-- **Pod alerts**: a bell watches for CrashLoopBackOff, OOMKilled, image pull failures and evictions, with a toast, optional desktop notification and taskbar flash.
-- **Workspaces**: save cluster + namespace + view + filter and switch back in one click.
+- **AI Chat window**: open **AI Chat** in the sidebar (or **Ask AI** in the top bar). Pick any cluster and namespace from your kubeconfig in the chat itself and ask away. Conversations are kept in a list; only questions and answers are saved.
+- **Connect your AI account**: **Sign in** opens Anthropic Console or Google AI Studio in your browser. Create an API key, paste it, done. The key is checked, then stored in Windows Credential Manager / macOS Keychain.
+- **Grounded, read-only answers**: the assistant looks at live data (resources, describe, manifests, logs including crashed containers, events, metrics) before answering. It can't change your cluster; it tells you the Kubellens action or kubectl command to use.
+- **You approve every reveal**: passwords, tokens, keys, private keys, credentials in URLs and Secret values are masked before anything is sent. If the AI needs a real value, you choose **Allow** or **Keep masked** for that one request.
+- **Quick side panel**: **Ctrl+I** opens the assistant next to any view; **Ask AI** on a pod alert starts a diagnosis.
+- **MCP server**: run `Kubellens --mcp` to give Claude Desktop, Claude Code, Gemini CLI and other MCP clients the same read-only tools and masking. AI settings has copy-ready setup snippets.
 
-### Fixes
-- Smart Lens Studio no longer shows stale data after switching cluster / namespace quickly, and shows load errors instead of treating them as empty lists.
-- Log stream errors (for example "no previous container") are shown in the log pane instead of waiting forever.
+### Notes
+- An Anthropic or Google AI Studio **API key** is required; usage is billed to that API account. Third-party apps can't use Claude.ai or Gemini chat subscriptions.
+- Cluster data you ask about is sent to the AI provider you choose (masked as described above). Check your organisation's policy for AI use.
 
 ### Downloads
 | Platform | File |

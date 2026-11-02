@@ -1,6 +1,6 @@
 [package]
 name = "freelens-rust"
-version = "1.3.0"
+version = "1.5.0"
 edition = "2021"
 authors = ["Ashutosh Chandra"]
 description = "Kubellens - native Kubernetes desktop IDE (Rust + Tauri v2)"
@@ -18,6 +18,13 @@ rust-embed = "8.12.0"
 mime_guess = "2.0.5"
 portable-pty = "0.9"
 dirs = "6"
+# AI assistant: HTTPS to Claude / Gemini with the OS certificate store (works behind corporate proxies)
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+regex = "1"
+
+# API keys live in Windows Credential Manager / macOS Keychain (Linux uses a 0600 file)
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

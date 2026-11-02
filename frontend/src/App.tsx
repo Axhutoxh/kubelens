@@ -9,6 +9,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { AlertsBell } from './components/AlertsBell';
 import { Workspace, WorkspacesMenu, loadWorkspaces, storeWorkspaces } from './components/WorkspacesMenu';
 import { usePodAlerts } from './hooks/usePodAlerts';
+import { Sparkles } from 'lucide-react';
 
 // Views and the (large) pod detail modal are split into their own chunks and only
 // downloaded/parsed when first opened, which keeps startup work small.
@@ -29,9 +30,13 @@ const EventsView = lazy(() => import('./views/EventsView').then((m) => ({ defaul
 const SmartLensStudio = lazy(() => import('./views/SmartLensStudio').then((m) => ({ default: m.SmartLensStudio })));
 const HelmView = lazy(() => import('./views/HelmView').then((m) => ({ default: m.HelmView })));
 const CustomResourcesView = lazy(() => import('./views/CustomResourcesView').then((m) => ({ default: m.CustomResourcesView })));
+const AiPanel = lazy(() => import('./ai/AiPanel').then((m) => ({ default: m.AiPanel })));
+const AiChatView = lazy(() => import('./ai/AiChatView').then((m) => ({ default: m.AiChatView })));
 
 // Views that fetch their own data (and show their own loading state)
-const SELF_LOADING_VIEWS = new Set(['smart-lens-studio', 'helm', 'crds']);
+const SELF_LOADING_VIEWS = new Set(['smart-lens-studio', 'ai-chat', 'helm', 'crds']);
+// Views that don't use the shared resource polling at all
+const NO_POLL_VIEWS = new Set(['smart-lens-studio', 'ai-chat']);
 
 const PALETTE_VIEWS = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ id: i.id, label: i.label.replace(/^⚡\s*/, '') })));
 const viewLabel = (id: string) => PALETTE_VIEWS.find((v) => v.id === id)?.label || id;
@@ -192,6 +197,16 @@ export const App: React.FC = () => {
     }
   };
 
+  // AI assistant side panel (Ctrl+I); `aiPrompt` asks a question as it opens
+  const [isAiOpen, setIsAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState<{ text: string; focus?: string; nonce: number } | null>(null);
+  // Conversation the full-page AI Chat should open (handed over from the side panel)
+  const [aiOpenChatId, setAiOpenChatId] = useState<string | null>(null);
+  const askAi = (text: string, focus?: string) => {
+    setAiPrompt({ text, focus, nonce: Date.now() });
+    setIsAiOpen(true);
+  };
+
   // Saved workspaces: cluster + namespace + view + filter
   const [workspaces, setWorkspaces] = useState<Workspace[]>(loadWorkspaces);
   const updateWorkspaces = (next: Workspace[]) => {
@@ -254,7 +269,7 @@ export const App: React.FC = () => {
 
   // Fetch all Resources for active cluster & namespace
   const loadResources = useCallback(async (silent = false) => {
-    if (currentView === 'smart-lens-studio') return;
+    if (NO_POLL_VIEWS.has(currentView)) return;
     const loadedKey = `${currentView}|${selectedNamespace}`;
     if (!silent) setIsRefreshing(true);
     try {
@@ -352,7 +367,7 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (currentView === 'smart-lens-studio') return;
+    if (NO_POLL_VIEWS.has(currentView)) return;
     loadResources();
     // Poll only while the window is visible, and catch up as soon as it is shown again
     const interval = setInterval(() => {
@@ -507,10 +522,15 @@ export const App: React.FC = () => {
     }
   };
 
-  // Ctrl+K / Ctrl+Shift+P opens the command palette from anywhere
+  // Ctrl+K / Ctrl+Shift+P opens the command palette from anywhere; Ctrl+I toggles the AI panel
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'i' && !(e.target as HTMLElement)?.closest?.('.xterm')) {
+        e.preventDefault();
+        setIsAiOpen((o) => !o);
+        return;
+      }
       if ((mod && e.key.toLowerCase() === 'k') || (mod && e.shiftKey && e.key.toLowerCase() === 'p')) {
         // Let a focused terminal keep Ctrl+K (clear line) unless the palette is already open
         if ((e.target as HTMLElement)?.closest?.('.xterm') && !isPaletteOpen) return;
@@ -610,6 +630,18 @@ export const App: React.FC = () => {
           isSmartLensStudioActive={currentView === 'smart-lens-studio'}
           extraActions={
             <>
+              <button
+                onClick={() => { setIsAiOpen(false); setCurrentView('ai-chat'); }}
+                title="AI Chat (Ctrl+I opens a quick side panel)"
+                className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-md border transition-colors cursor-pointer ${
+                  currentView === 'ai-chat'
+                    ? 'bg-gradient-to-r from-cyan-500/20 to-violet-500/20 text-cyan-200 border-cyan-500/60'
+                    : 'bg-slate-950/80 text-slate-300 border-slate-700 hover:border-cyan-500/60 hover:text-cyan-300'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-violet-300" />
+                <span className="whitespace-nowrap">Ask AI</span>
+              </button>
               <WorkspacesMenu
                 workspaces={workspaces}
                 current={{ context: currentContext, namespace: selectedNamespace, view: currentView, search: searchQuery }}
@@ -628,6 +660,12 @@ export const App: React.FC = () => {
                 onMarkAllRead={podAlerts.markAllRead}
                 onClear={podAlerts.clear}
                 onOpenAlert={openAlert}
+                onAskAi={(a) =>
+                  askAi(
+                    `Pod ${a.namespace}/${a.pod}${a.container ? ` (container ${a.container})` : ''} reported ${a.reason}. Find the cause and tell me how to fix it.`,
+                    `pod ${a.namespace}/${a.pod}`
+                  )
+                }
               />
             </>
           }
@@ -859,6 +897,16 @@ export const App: React.FC = () => {
             />
           )}
 
+          {currentView === 'ai-chat' && (
+            <AiChatView
+              contexts={contexts}
+              currentContext={currentContext}
+              currentNamespace={selectedNamespace}
+              openChatId={aiOpenChatId}
+              onToast={showToast}
+            />
+          )}
+
           {currentView === 'smart-lens-studio' && (
             <SmartLensStudio
               contexts={contexts}
@@ -928,6 +976,19 @@ export const App: React.FC = () => {
         </footer>
       </div>
 
+      {isAiOpen && currentView !== 'ai-chat' && (
+        <Suspense fallback={<div className="w-[420px] shrink-0 border-l border-slate-800 bg-slate-900" />}>
+          <AiPanel
+            isOpen={isAiOpen}
+            onClose={() => setIsAiOpen(false)}
+            context={{ cluster: currentContext, namespace: selectedNamespace, view: viewLabel(currentView) }}
+            initialPrompt={aiPrompt}
+            onOpenFull={(id) => { setAiOpenChatId(id || null); setCurrentView('ai-chat'); }}
+            onToast={showToast}
+          />
+        </Suspense>
+      )}
+
       <CommandPalette
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
@@ -953,6 +1014,8 @@ export const App: React.FC = () => {
           { id: 'dock', label: isDockOpen ? 'Hide bottom panel' : 'Show bottom panel', run: () => setIsDockOpen(!isDockOpen) },
           { id: 'sidebar', label: isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar', run: toggleSidebar },
           { id: 'clear-search', label: 'Clear search filter', run: () => setSearchQuery('') },
+          { id: 'ai-chat', label: 'Open AI Chat', run: () => setCurrentView('ai-chat') },
+          { id: 'ai', label: isAiOpen ? 'Close AI side panel' : 'Open AI side panel', hint: 'Ctrl+I', run: () => setIsAiOpen((o) => !o) },
           {
             id: 'save-workspace',
             label: 'Save current view as workspace…',

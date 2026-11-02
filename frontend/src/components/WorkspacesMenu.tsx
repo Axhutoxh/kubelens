@@ -70,7 +70,7 @@ export const WorkspacesMenu: React.FC<WorkspacesMenuProps> = ({ workspaces, curr
         title="Saved workspaces"
       >
         <Bookmark className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-        <span className="truncate">{active ? active.name : 'Workspaces'}</span>
+        <span className="truncate hidden @6xl:inline">{active ? active.name : 'Workspaces'}</span>
       </button>
 
       {open && (
