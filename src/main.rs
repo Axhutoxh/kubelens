@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -1944,6 +1946,13 @@ async fn main() {
     #[cfg(not(target_os = "windows"))]
     extend_path_for_gui_launch();
 
+    // `kubellens --mcp`: MCP server on stdio for external AI clients. Must run before
+    // anything else prints, since stdout carries the protocol.
+    if std::env::args().any(|a| a == "--mcp") {
+        ai::mcp::run().await;
+        return;
+    }
+
     let state = AppState {
         current_context: Arc::new(RwLock::new(String::new())),
         context_init: Arc::new(OnceCell::new()),
@@ -1996,6 +2005,7 @@ async fn main() {
         .route("/helm/uninstall", post(handle_helm_uninstall))
         .route("/k8s/logs/multi", get(handle_multi_logs))
         .route("/exec/ws", get(handle_exec_ws))
+        .nest("/ai", ai::router())
         .with_state(state);
 
     match static_dir_override() {

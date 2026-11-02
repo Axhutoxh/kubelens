@@ -55,9 +55,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     // z-40: backdrop-blur makes the header its own stacking context, so without a z-index its
     // dropdowns (workspaces, alerts) would paint underneath the main content
-    <header className="relative z-40 h-12 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 select-none shrink-0">
+    <header className="@container relative z-40 h-12 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between gap-4 select-none shrink-0">
       {/* Left side: Toggle button + Search Input */}
-      <div className="flex-1 max-w-md flex items-center gap-2">
+      <div className="flex-1 max-w-md min-w-[180px] flex items-center gap-2">
         {onToggleSidebar && (
           <button
             onClick={onToggleSidebar}
@@ -89,7 +89,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Namespace Filter */}
         <div className="flex items-center gap-1.5 bg-slate-950/80 border border-slate-800 rounded-md px-2.5 py-1">
           <Filter className="w-3 h-3 text-cyan-400" />
-          <span className="text-[11px] text-slate-400">Namespace:</span>
+          <span className="text-[11px] text-slate-400 hidden @6xl:inline">Namespace:</span>
           <select
             value={selectedNamespace}
             onChange={(e) => onSelectNamespace(e.target.value)}
@@ -117,7 +117,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {isRefreshing && (
             <span className="flex items-center gap-1 text-[11px] text-cyan-300 bg-cyan-950/80 border border-cyan-800/60 px-2 py-0.5 rounded-full font-medium animate-pulse shadow-sm">
               <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-              <span>Loading...</span>
+              <span className="hidden @6xl:inline">Loading...</span>
             </span>
           )}
         </div>
@@ -134,7 +134,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             title="Open Smart Lens Studio: Dual-namespace comparator & manager"
           >
             <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="bg-gradient-to-r from-cyan-300 to-indigo-300 bg-clip-text text-transparent font-bold">
+            <span className="bg-gradient-to-r from-cyan-300 to-indigo-300 bg-clip-text text-transparent font-bold whitespace-nowrap hidden @6xl:inline">
               Smart Lens Studio
             </span>
           </button>
@@ -143,10 +143,11 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Create Resource Button */}
         <button
           onClick={onOpenCreateModal}
+          title="New Resource"
           className="flex items-center gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold px-2.5 py-1 rounded-md transition-colors shadow-sm shadow-cyan-900/30 cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>New Resource</span>
+          <span className="whitespace-nowrap hidden @6xl:inline">New Resource</span>
         </button>
 
         {/* Active Port Forwards Pill */}
@@ -166,6 +167,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Dock Logs/Editor Toggle */}
         <button
           onClick={onToggleDock}
+          title="Dock: logs, shells and YAML"
           className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md border transition-colors cursor-pointer ${
             isDockOpen
               ? 'bg-slate-800 text-cyan-300 border-cyan-500/50'
@@ -173,7 +175,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           }`}
         >
           <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Dock</span>
+          <span className="hidden @6xl:inline">Dock</span>
         </button>
       </div>
     </header>

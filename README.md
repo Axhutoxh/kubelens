@@ -27,6 +27,7 @@ A fast, native **Kubernetes IDE & management dashboard** for Windows, macOS and 
 ```text
 freelens-rust/
 ├── src/main.rs              # Native async Rust desktop & backend (Tauri v2 + Axum + Tokio)
+├── src/ai/                  # AI assistant + MCP server (see src/ai/README.md)
 ├── build.rs                 # tauri-build hook
 ├── Cargo.toml / Cargo.lock  # Rust crate dependencies
 ├── tauri.conf.json          # Tauri v2 app + installer configuration
@@ -37,6 +38,7 @@ freelens-rust/
 │   └── src/
 │       ├── views/           # Kubernetes resource views
 │       ├── components/      # Detail / action modals, sidebar, dock
+│       ├── ai/              # AI Chat window, side panel, settings
 │       ├── api/             # Client API to the Rust backend
 │       ├── hooks/           # Shared React hooks (pod alerts)
 │       ├── utils/           # Line diff, log parsing helpers
@@ -94,7 +96,7 @@ bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.3.0 && git push origin v1.3.0
+git tag v1.5.0 && git push origin v1.5.0
 ```
 The text at the top of the GitHub Release comes from [`.github/release-notes.md`](.github/release-notes.md); update it before tagging. GitHub's auto-generated change list is appended below it.
 | Platform | Release asset |
@@ -114,6 +116,14 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 ---
 
 ## ✨ Features Implemented in the Suite
+
+### New in 1.5: AI assistant
+* **AI Chat window**: A full chat page (sidebar → **AI Chat**, or **Ask AI** in the top bar). Ask **Claude** or **Gemini** about **any cluster and namespace** in your kubeconfig; pick them in the chat itself, independent of the main view. Conversations are kept in a list, and only questions and answers are saved.
+* **Connect your AI account**: **Sign in** opens Anthropic Console or Google AI Studio in your browser; create an API key, paste it, done. The key is checked first, then stored in Windows Credential Manager / macOS Keychain.
+* **Grounded, read-only answers**: The assistant looks at live cluster data with read-only tools (list, describe, manifest, logs including crashed containers, events, metrics). It can't change anything; when a fix is needed it names the Kubellens action or kubectl command.
+* **You approve every reveal**: Passwords, tokens, keys, private keys, URL credentials and Secret values are masked before anything is sent. To see a real value the AI must ask, and you choose **Allow** or **Keep masked** for each request.
+* **Quick panel & alerts**: **Ctrl+I** opens a side panel next to any view, and **Ask AI** on a pod alert starts a diagnosis.
+* **MCP server**: `Kubellens --mcp` gives Claude Desktop, Claude Code, Gemini CLI and other MCP clients the same read-only tools and masking. AI settings has copy-ready setup snippets. Details: [src/ai/README.md](src/ai/README.md).
 
 ### New in 1.3
 * **Find in text**: Search inside ConfigMap values and the YAML editor (Ctrl+F). Matches are highlighted in place, with a "3 of 12" counter, next / previous (Enter / Shift+Enter) and match case.

@@ -12,6 +12,7 @@ interface AlertsBellProps {
   onMarkAllRead: () => void;
   onClear: () => void;
   onOpenAlert: (a: PodAlert) => void;
+  onAskAi?: (a: PodAlert) => void;
 }
 
 const REASON_TONE: Record<string, string> = {
@@ -39,6 +40,7 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
   onMarkAllRead,
   onClear,
   onOpenAlert,
+  onAskAi,
 }) => {
   const [open, setOpen] = useState(false);
   const [desktopNote, setDesktopNote] = useState<string | null>(null);
@@ -114,10 +116,12 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
               </div>
             ) : (
               alerts.map((a) => (
-                <button
+                <div
                   key={`${a.id}-${a.at}`}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => { onOpenAlert(a); setOpen(false); }}
-                  className="w-full text-left px-3 py-2 border-b border-slate-800/70 hover:bg-slate-800/60 transition-colors"
+                  className="w-full text-left px-3 py-2 border-b border-slate-800/70 hover:bg-slate-800/60 transition-colors cursor-pointer"
                 >
                   <div className="flex items-center gap-2">
                     <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${REASON_TONE[a.reason] || 'text-rose-300 bg-rose-950/60 border-rose-800/70'}`}>
@@ -125,11 +129,20 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
                     </span>
                     <span className="font-mono text-[11px] text-slate-200 truncate">{a.pod}</span>
                     <span className="ml-auto text-[10px] text-slate-500 shrink-0">{ago(a.at)}</span>
+                    {onAskAi && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onAskAi(a); setOpen(false); }}
+                        className="text-[10px] text-violet-300 hover:text-violet-200 border border-violet-800/70 rounded px-1.5 shrink-0"
+                        title="Ask the AI assistant to find the cause"
+                      >
+                        Ask AI
+                      </button>
+                    )}
                   </div>
                   <div className="mt-0.5 text-[10px] text-slate-500 truncate">
                     {a.namespace}{a.container ? ` · ${a.container}` : ''}{a.message ? ` · ${a.message}` : ''}
                   </div>
-                </button>
+                </div>
               ))
             )}
           </div>

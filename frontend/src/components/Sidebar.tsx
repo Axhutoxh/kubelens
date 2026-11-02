@@ -16,7 +16,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Package,
-  Puzzle
+  Puzzle,
+  Bot
 } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
 
@@ -25,6 +26,7 @@ export const NAV_SECTIONS = [
     title: 'Studio & Cluster',
     items: [
       { id: 'smart-lens-studio', label: '⚡ Smart Lens Studio', icon: Sparkles },
+      { id: 'ai-chat', label: 'AI Chat', icon: Bot },
       { id: 'overview', label: 'Overview', icon: Activity },
       { id: 'nodes', label: 'Nodes', icon: Cpu },
       { id: 'events', label: 'Events', icon: Radio },
@@ -226,7 +228,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-mono text-cyan-400/90 font-bold tracking-tight">KUBELLENS</span>
               <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
-                v1.3.0 Native
+                v1.5.0 Native
               </span>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">
