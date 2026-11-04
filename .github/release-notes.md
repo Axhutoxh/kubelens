@@ -1,18 +1,20 @@
-## Kubellens v1.5.0: AI assistant
+## Kubellens v1.6.0: more AI providers, in-app updates
 
-Ask Claude or Gemini about your clusters, right inside Kubellens, without giving away your secrets.
+Use OpenAI, Azure OpenAI or a local Ollama model with the AI assistant, keep secrets in application logs masked, update Kubellens from inside the app, and see ConfigMaps and Secrets in one list.
 
 ### New
-- **AI Chat window**: open **AI Chat** in the sidebar (or **Ask AI** in the top bar). Pick any cluster and namespace from your kubeconfig in the chat itself and ask away. Conversations are kept in a list; only questions and answers are saved.
-- **Connect your AI account**: **Sign in** opens Anthropic Console or Google AI Studio in your browser. Create an API key, paste it, done. The key is checked, then stored in Windows Credential Manager / macOS Keychain.
-- **Grounded, read-only answers**: the assistant looks at live data (resources, describe, manifests, logs including crashed containers, events, metrics) before answering. It can't change your cluster; it tells you the Kubellens action or kubectl command to use.
-- **You approve every reveal**: passwords, tokens, keys, private keys, credentials in URLs and Secret values are masked before anything is sent. If the AI needs a real value, you choose **Allow** or **Keep masked** for that one request.
-- **Quick side panel**: **Ctrl+I** opens the assistant next to any view; **Ask AI** on a pod alert starts a diagnosis.
-- **MCP server**: run `Kubellens --mcp` to give Claude Desktop, Claude Code, Gemini CLI and other MCP clients the same read-only tools and masking. AI settings has copy-ready setup snippets.
+- **OpenAI, Azure OpenAI and Ollama**: connect them in AI settings next to Claude and Gemini.
+  - **OpenAI**: paste an API key. An optional base URL also works with OpenAI-compatible gateways.
+  - **Azure OpenAI**: enter your resource endpoint, deployment name and key; all three are checked when you save.
+  - **Ollama**: no key needed. Models run on your own machine, so cluster data never leaves it.
+- **Secrets in logs stay masked**: besides labelled passwords and tokens, the assistant now masks well-known token formats (GitHub, GitLab, Slack, Google, Stripe, OpenAI, Anthropic, npm), Azure SAS signatures and storage account keys, and random-looking tokens printed without a label. Pod names, UUIDs, image digests and certificates are left alone.
+- **In-app updates**: Kubellens checks for a new release shortly after it starts. An **Update** button in the top bar shows the release notes; **Install & restart** downloads the installer, checks it against the release's SHA-256 checksum, and runs it. Check any time by clicking the version in the sidebar or with **Check for updates** in Ctrl+K.
+- **ConfigMaps & Secrets in one list**: a new **Configuration → ConfigMaps & Secrets** view lists both together, with a Kind column (including the Secret type: Opaque, TLS, Docker config, Helm release…), All / ConfigMaps / Secrets filters and search. Rows open the usual editors.
 
 ### Notes
-- An Anthropic or Google AI Studio **API key** is required; usage is billed to that API account. Third-party apps can't use Claude.ai or Gemini chat subscriptions.
-- Cluster data you ask about is sent to the AI provider you choose (masked as described above). Check your organisation's policy for AI use.
+- This is the first version with in-app updates, so 1.5.0 has to be updated by downloading this release. From 1.6.0 on, Kubellens offers new versions itself.
+- One-click install works for the Windows installer, the macOS dmg (opens it) and the Linux AppImage. The portable `.exe`, `.deb` and `.rpm` link to the release page instead.
+- Set `KUBELLENS_NO_UPDATE_CHECK=1` to turn update checks off.
 
 ### Downloads
 | Platform | File |

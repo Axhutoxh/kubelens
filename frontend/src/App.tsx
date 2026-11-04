@@ -7,6 +7,7 @@ import { ScaleModal } from './components/ScaleModal';
 import { ViewLoader } from './components/ViewLoader';
 import { CommandPalette } from './components/CommandPalette';
 import { AlertsBell } from './components/AlertsBell';
+import { UpdateNotice } from './components/UpdateNotice';
 import { Workspace, WorkspacesMenu, loadWorkspaces, storeWorkspaces } from './components/WorkspacesMenu';
 import { usePodAlerts } from './hooks/usePodAlerts';
 import { Sparkles } from 'lucide-react';
@@ -53,6 +54,7 @@ const VIEW_LABELS: Record<string, string> = {
   nodes: 'nodes',
   services: 'services',
   ingresses: 'ingresses',
+  'config-all': 'config maps and secrets',
   configmaps: 'config maps',
   secrets: 'secrets',
   events: 'events',
@@ -196,6 +198,9 @@ export const App: React.FC = () => {
       setSearchQuery(a.pod);
     }
   };
+
+  // Bumped by "Check for updates" (palette, sidebar version badge)
+  const [updateCheck, setUpdateCheck] = useState(0);
 
   // AI assistant side panel (Ctrl+I); `aiPrompt` asks a question as it opens
   const [isAiOpen, setIsAiOpen] = useState(false);
@@ -346,10 +351,10 @@ export const App: React.FC = () => {
             })
         );
       }
-      if (currentView === 'configmaps') {
+      if (currentView === 'configmaps' || currentView === 'config-all') {
         promises.push(fetchK8sResource<ConfigMapItem>('configmaps', ns).then((res) => setConfigMaps(res.items || [])).catch(() => {}));
       }
-      if (currentView === 'secrets') {
+      if (currentView === 'secrets' || currentView === 'config-all') {
         promises.push(fetchK8sResource<SecretItem>('secrets', ns).then((res) => setSecrets(res.items || [])).catch(() => {}));
       }
 
@@ -603,6 +608,7 @@ export const App: React.FC = () => {
         onSwitchContext={handleSwitchContext}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={toggleSidebar}
+        onCheckUpdates={() => setUpdateCheck((n) => n + 1)}
       />
 
       {/* Main Content Area */}
@@ -630,6 +636,7 @@ export const App: React.FC = () => {
           isSmartLensStudioActive={currentView === 'smart-lens-studio'}
           extraActions={
             <>
+              <UpdateNotice manualCheck={updateCheck} onToast={showToast} />
               <button
                 onClick={() => { setIsAiOpen(false); setCurrentView('ai-chat'); }}
                 title="AI Chat (Ctrl+I opens a quick side panel)"
@@ -855,7 +862,7 @@ export const App: React.FC = () => {
             />
           )}
 
-          {(currentView === 'configmaps' || currentView === 'secrets') && (
+          {(currentView === 'configmaps' || currentView === 'secrets' || currentView === 'config-all') && (
             <ConfigView
               configMaps={configMaps}
               secrets={secrets}
@@ -1016,6 +1023,7 @@ export const App: React.FC = () => {
           { id: 'clear-search', label: 'Clear search filter', run: () => setSearchQuery('') },
           { id: 'ai-chat', label: 'Open AI Chat', run: () => setCurrentView('ai-chat') },
           { id: 'ai', label: isAiOpen ? 'Close AI side panel' : 'Open AI side panel', hint: 'Ctrl+I', run: () => setIsAiOpen((o) => !o) },
+          { id: 'check-updates', label: 'Check for updates', run: () => setUpdateCheck((n) => n + 1) },
           {
             id: 'save-workspace',
             label: 'Save current view as workspace…',

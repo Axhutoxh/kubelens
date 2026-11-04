@@ -9,12 +9,15 @@ async function json<T>(res: Response): Promise<T> {
 
 export const getAiStatus = () => fetch(`${BASE}/status`).then((r) => json<AiStatus>(r));
 
-/** Validates the key with the provider, then stores it in the OS credential store. */
-export const saveAiKey = (provider: ProviderId, key: string) =>
+/**
+ * Connects a provider: checks the key (and endpoint / Azure deployment) with the provider,
+ * then stores the key in the OS credential store. An empty key keeps the saved one.
+ */
+export const saveAiKey = (provider: ProviderId, key: string, extra: { endpoint?: string; model?: string } = {}) =>
   fetch(`${BASE}/key`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider, key }),
+    body: JSON.stringify({ provider, key, ...extra }),
   }).then((r) => json<{ models: ModelInfo[] }>(r));
 
 export const deleteAiKey = (provider: ProviderId) =>

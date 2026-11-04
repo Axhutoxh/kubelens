@@ -17,7 +17,8 @@ import {
   PanelLeftOpen,
   Package,
   Puzzle,
-  Bot
+  Bot,
+  FileKey
 } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
 
@@ -46,6 +47,7 @@ export const NAV_SECTIONS = [
   {
     title: 'Configuration',
     items: [
+      { id: 'config-all', label: 'ConfigMaps & Secrets', icon: FileKey },
       { id: 'configmaps', label: 'ConfigMaps', icon: FileText },
       { id: 'secrets', label: 'Secrets', icon: ShieldCheck },
     ],
@@ -75,6 +77,7 @@ interface SidebarProps {
   onSwitchContext: (ctx: string) => void;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  onCheckUpdates?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -85,6 +88,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSwitchContext,
   isCollapsed = false,
   onToggleCollapse,
+  onCheckUpdates,
 }) => {
 
   return (
@@ -227,9 +231,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between">
               <span className="font-mono text-cyan-400/90 font-bold tracking-tight">KUBELLENS</span>
-              <span className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono">
-                v1.5.0 Native
-              </span>
+              <button
+                onClick={onCheckUpdates}
+                title="Check for updates"
+                className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono hover:border-cyan-500/70 hover:text-cyan-300 transition-colors cursor-pointer"
+              >
+                v1.6.0 Native
+              </button>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">
               by <span className="text-slate-400 font-semibold">Ashutosh Chandra</span>

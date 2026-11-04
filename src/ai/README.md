@@ -1,20 +1,21 @@
 # AI assistant (`src/ai`)
 
-Ask Claude or Gemini about the cluster from inside Kubellens, or use Kubellens' cluster tools from other AI apps over MCP. Both paths share one set of **read-only** tools and the same masking of sensitive data.
+Ask Claude, Gemini, OpenAI, Azure OpenAI or a local Ollama model about the cluster from inside Kubellens, or use Kubellens' cluster tools from other AI apps over MCP. Both paths share one set of **read-only** tools and the same masking of sensitive data.
 
 ```text
 src/ai/
 ├── mod.rs             # module root + /api/ai routes
 ├── tools.rs           # read-only kubectl tools (shared by chat and MCP), argument validation
-├── redact.rs          # masks passwords, tokens, keys, private keys, URL credentials
+├── redact.rs          # masks passwords, tokens, keys, private keys, URL credentials, random-looking tokens
 ├── agent.rs           # in-app chat: HTTP handlers + tool-calling loop + permission pause
 ├── mcp.rs             # MCP server on stdio (`kubellens --mcp`)
 ├── keystore.rs        # API keys in Windows Credential Manager / macOS Keychain (Linux: 0600 file)
-├── settings.rs        # default provider + model per provider (no secrets)
+├── settings.rs        # default provider, model and endpoint per provider (no secrets)
 └── providers/
-    ├── mod.rs         # provider-neutral messages, HTTP client, error mapping
+    ├── mod.rs         # provider list, endpoints, provider-neutral messages, HTTP client, error mapping
     ├── anthropic.rs   # Claude (Messages API, tool use)
-    └── gemini.rs      # Gemini (generateContent, function calling)
+    ├── gemini.rs      # Gemini (generateContent, function calling)
+    └── openai.rs      # OpenAI Chat Completions: OpenAI / compatible gateways, Azure OpenAI, Ollama
 
 frontend/src/ai/
 ├── AiChatView.tsx     # full-page AI Chat: any cluster / namespace, saved conversations
@@ -49,7 +50,7 @@ Nothing can change the cluster. Arguments are validated, and values never start 
 3. **In the app:** the chat loop stops and shows a permission card. **Allow** reveals the values for that one call; **Keep masked** sends the masked output again.
 4. **Over MCP:** the server asks the user through MCP *elicitation*. Clients without elicitation support get masked output plus a note.
 
-Masking is best effort (pattern based). It covers common shapes, including config files embedded in JSON strings. The unit tests in `redact.rs` list what is covered.
+Masking is best effort (pattern based). It covers common shapes, including config files embedded in JSON strings, well-known token prefixes (GitHub, GitLab, Slack, Google, Stripe, OpenAI, Anthropic, npm), Azure SAS signatures and account keys. Secrets printed without a label, as in application logs, are caught by a randomness check: 24+ characters mixing upper case, lower case and digits, switching between them often, with near-maximum entropy. Hex strings (digests, UUIDs, container ids), lower-case Kubernetes names, dotted names, paths and certificates are left alone. On 7,984 real log lines it masked nothing; it catches 98–100% of random 24–40 character tokens. The unit tests in `redact.rs` list what is covered.
 
 ## In-app chat flow
 
@@ -75,12 +76,13 @@ The server uses the current kubectl context by default; each tool also accepts `
 
 | | |
 | :--- | :--- |
-| API keys | OS credential store, service `kubellens-ai`. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY` is used when no key is saved |
-| Settings | `<config dir>/kubellens/ai-settings.json` (provider, models) |
-| Gateways / tests | `KUBELLENS_ANTHROPIC_BASE_URL`, `KUBELLENS_GEMINI_BASE_URL` |
+| API keys | OS credential store, service `kubellens-ai`. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OPENAI_API_KEY` or `AZURE_OPENAI_API_KEY` is used when no key is saved. Ollama needs no key |
+| Settings | `<config dir>/kubellens/ai-settings.json` (provider, models, endpoints) |
+| Endpoints | OpenAI: optional base URL (default `https://api.openai.com/v1`, or any compatible gateway). Azure: resource endpoint (`AZURE_OPENAI_ENDPOINT` as fallback) plus deployment name, API version `2024-10-21`. Ollama: server URL (default `http://localhost:11434/v1`); connecting it is what marks it as connected |
+| Gateways / tests | `KUBELLENS_ANTHROPIC_BASE_URL`, `KUBELLENS_GEMINI_BASE_URL`, `KUBELLENS_OPENAI_BASE_URL`, `KUBELLENS_OLLAMA_BASE_URL` (override saved endpoints) |
 | Sign-in links | `POST /api/ai/open-url` opens only the providers' API key pages in the system browser |
 
-Saving a key checks it first by listing the provider's models.
+Connecting checks the provider first by listing its models. Azure can't list deployments, so it sends a one-word request to the deployment instead.
 
 ## Tests
 
