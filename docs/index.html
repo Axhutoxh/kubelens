@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kubellens — Kubernetes IDE in Rust</title>
-<meta name="description" content="Kubellens: a blazing-fast native Kubernetes IDE built with Rust, Tauri v2, Tokio, Axum and React 19. AI assistant for any cluster (Claude / Gemini, secrets masked), pod shell, smart logs, bulk image tags with live rollouts, cluster-to-cluster diffs and pod alerts in ~30 MB of RAM. Zero Electron." />
+<meta name="description" content="Kubellens: a blazing-fast native Kubernetes IDE built with Rust, Tauri v2, Tokio, Axum and React 19. AI assistant for any cluster (Claude, Gemini, OpenAI, Azure OpenAI or local Ollama; secrets masked), pod shell, smart logs, bulk image tags with live rollouts, cluster-to-cluster diffs and pod alerts in ~30 MB of RAM. Zero Electron." />
 <meta property="og:title" content="Kubellens — Kubernetes IDE in Rust" />
 <meta property="og:description" content="Native Kubernetes desktop IDE. Starts in under 50 ms, runs in ~30 MB of RAM." />
 <meta property="og:image" content="assets/logo.png" />
@@ -316,7 +316,7 @@
 <header class="hero">
   <div class="wrap">
     <div>
-      <div class="pill"><span class="dot"></span><b>v1.5.0</b> Windows · macOS · Linux · Zero Electron</div>
+      <div class="pill"><span class="dot"></span><b>v1.6.0</b> Windows · macOS · Linux · Zero Electron</div>
       <div class="logo-orbit">
         <svg viewBox="0 0 132 132" fill="none">
           <circle cx="66" cy="66" r="62" stroke="url(#g1)" stroke-width="1.5" stroke-dasharray="4 10" />
@@ -786,8 +786,9 @@
   /* ---- features ---- */
   const icon = p => `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const feats = [
-    ['AI Chat for any cluster', 'Ask Claude or Gemini about any cluster and namespace. Answers come from live, read-only lookups; secrets stay masked unless you allow them.', '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>'],
+    ['AI Chat for any cluster', 'Ask Claude, Gemini, OpenAI, Azure OpenAI or a local Ollama model about any cluster and namespace. Answers come from live, read-only lookups; secrets stay masked unless you allow them.', '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>'],
     ['MCP server built in', 'Run Kubellens --mcp to give Claude Desktop, Claude Code or Gemini CLI the same read-only cluster tools and masking.', '<path d="M9 2v6M15 2v6M7 8h10v4a5 5 0 0 1-10 0z"/><path d="M12 17v5"/>'],
+    ['Updates itself', 'New releases show up in the top bar with their notes. One click downloads, verifies the checksum and installs.', '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'],
     ['Bulk image tags + live rollouts', 'Set one tag on many deployments, watch every rollout live, catch image pull failures and undo the whole batch in one click.', '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>'],
     ['Environment diff', 'Compare two clusters or namespaces side by side: image tags, env, resources and ConfigMaps, key by key.', '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6M18 15V9a3 3 0 0 0-3-3H9"/>'],
     ['Smarter logs', 'Crashed-container logs, time ranges, colour-coded errors, regex filters, JSON pretty-print and one-click download.', '<path d="M4 6h16M4 12h10M4 18h7"/><path d="m16 16 2 2 4-4"/>'],
@@ -858,7 +859,7 @@
       ['<span class="c">[1/2] Compiling React 19 Frontend Dashboard…</span>', 0],
       ['  vite v6 building for production…  <span class="p">✓</span> 254 KB initial (lazy views)', 0],
       ['<span class="c">[2/2] Packaging Native Tauri Release…</span>', 0],
-      ['  <span class="o">Compiling</span> freelens-rust v1.5.0 (release, lto=fat)', 0],
+      ['  <span class="o">Compiling</span> freelens-rust v1.6.0 (release, lto=fat)', 0],
       ['  <span class="p">Finished</span> release in 1m 42s', 0],
       ['  <span class="p">✓</span> release\\kubellens-setup.exe', 0],
       ['<span class="p">PS&gt;</span> <span class="k">.\\release\\kubellens.exe</span>', 30],

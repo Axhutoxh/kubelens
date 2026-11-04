@@ -231,7 +231,7 @@ export const AiChatView: React.FC<AiChatViewProps> = ({ contexts, currentContext
                   </div>
                   <h2 className="text-lg font-semibold text-slate-100">Connect your AI</h2>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Sign in to Claude or Gemini, create an API key and paste it below. Then ask anything about any cluster and namespace in your kubeconfig.
+                    Connect Claude, Gemini, OpenAI, Azure OpenAI, or a local model with Ollama. Then ask anything about any cluster and namespace in your kubeconfig.
                   </p>
                   <p className="flex items-center justify-center gap-1.5 text-[11px] text-emerald-300/90">
                     <ShieldCheck className="w-3.5 h-3.5" /> Read-only access · secrets masked · you approve every reveal

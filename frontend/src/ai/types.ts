@@ -1,7 +1,7 @@
 // Conversation format shared with the Rust backend (src/ai/providers/mod.rs). The UI keeps
 // the whole conversation and sends it with every request; the backend is stateless.
 
-export type ProviderId = 'anthropic' | 'gemini';
+export type ProviderId = 'anthropic' | 'gemini' | 'openai' | 'azure' | 'ollama';
 
 export interface ToolCall {
   id: string;
@@ -45,6 +45,12 @@ export interface ProviderStatus {
   source: 'keychain' | 'env' | null;
   model: string;
   keyUrl: string;
+  /** false for Ollama (local, no key) */
+  needsKey: boolean;
+  endpointMode: 'none' | 'optional' | 'required';
+  /** Endpoint saved when the provider was connected */
+  endpoint: string | null;
+  defaultEndpoint: string | null;
 }
 
 export interface AiStatus {

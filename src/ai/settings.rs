@@ -7,12 +7,15 @@ use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct AiSettings {
-    /// "anthropic" or "gemini"
+    /// Default provider id ("anthropic", "gemini", "openai", "azure", "ollama")
     #[serde(default)]
     pub provider: Option<String>,
-    /// provider id -> model id
+    /// provider id -> model id (the deployment name for Azure)
     #[serde(default)]
     pub models: HashMap<String, String>,
+    /// provider id -> endpoint URL (Azure resource, OpenAI-compatible gateway, Ollama server)
+    #[serde(default)]
+    pub endpoints: HashMap<String, String>,
 }
 
 fn path() -> Option<PathBuf> {

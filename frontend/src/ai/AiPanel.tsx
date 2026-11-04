@@ -83,7 +83,7 @@ export const AiPanel: React.FC<AiPanelProps> = ({ isOpen, onClose, context, init
       ) : showSettings || chat.connected.length === 0 ? (
         <div className="flex-1 overflow-auto p-3 space-y-3">
           {chat.connected.length === 0 && (
-            <div className="text-xs text-slate-300">Connect Claude or Gemini to ask questions about your cluster and Kubellens.</div>
+            <div className="text-xs text-slate-300">Connect an AI provider (Claude, Gemini, OpenAI, Azure OpenAI or local Ollama) to ask questions about your cluster and Kubellens.</div>
           )}
           <AiSettings status={chat.status} onChanged={chat.refreshStatus} onToast={onToast} />
         </div>

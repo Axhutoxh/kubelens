@@ -96,7 +96,7 @@ bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.5.0 && git push origin v1.5.0
+git tag v1.6.0 && git push origin v1.6.0
 ```
 The text at the top of the GitHub Release comes from [`.github/release-notes.md`](.github/release-notes.md); update it before tagging. GitHub's auto-generated change list is appended below it.
 | Platform | Release asset |
@@ -116,6 +116,12 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 ---
 
 ## ✨ Features Implemented in the Suite
+
+### New in 1.6
+* **More AI providers**: Connect **OpenAI** (optional base URL for compatible gateways), **Azure OpenAI** (endpoint + deployment) or a local **Ollama** model (no key; cluster data stays on your machine) next to Claude and Gemini.
+* **Secrets in logs stay masked**: Well-known token formats (GitHub, GitLab, Slack, Google, Stripe, OpenAI, Anthropic, npm), Azure SAS signatures and account keys, and random-looking tokens printed without a label are masked before anything is sent to the AI.
+* **In-app updates**: An **Update** button appears when a new release is out. **Install & restart** downloads it, verifies its SHA-256 checksum and runs the installer (Windows installer, macOS dmg, Linux AppImage). Click the version in the sidebar or use **Check for updates** in Ctrl+K to check any time; `KUBELLENS_NO_UPDATE_CHECK=1` turns checks off.
+* **ConfigMaps & Secrets in one list**: **Configuration → ConfigMaps & Secrets** shows both together, with the Secret type, kind filters and search.
 
 ### New in 1.5: AI assistant
 * **AI Chat window**: A full chat page (sidebar → **AI Chat**, or **Ask AI** in the top bar). Ask **Claude** or **Gemini** about **any cluster and namespace** in your kubeconfig; pick them in the chat itself, independent of the main view. Conversations are kept in a list, and only questions and answers are saved.

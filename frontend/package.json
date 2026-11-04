@@ -3,7 +3,7 @@
   "productName": "lensbyacp",
   "author": "Ashutosh Chandra",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Kubellens - native Kubernetes desktop IDE (Rust + Tauri) by Ashutosh Chandra",
   "type": "module",
   "scripts": {

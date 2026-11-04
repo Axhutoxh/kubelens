@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod browser;
+mod update;
 
 use axum::{
     extract::{
@@ -2006,6 +2008,7 @@ async fn main() {
         .route("/k8s/logs/multi", get(handle_multi_logs))
         .route("/exec/ws", get(handle_exec_ws))
         .nest("/ai", ai::router())
+        .nest("/update", update::router())
         .with_state(state);
 
     match static_dir_override() {
