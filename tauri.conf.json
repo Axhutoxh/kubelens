@@ -36,7 +36,7 @@
       "icons/icon.ico"
     ],
     "shortDescription": "Native Kubernetes IDE",
-    "longDescription": "Kubellens is a fast, native Kubernetes desktop IDE built with Rust, Tauri, Tokio and React: an AI assistant (Claude, Gemini, OpenAI, Azure OpenAI or local Ollama) that answers questions about any cluster with secrets masked, in-app updates, pod shell and smart logs, bulk image tags with live rollout tracking, cluster-to-cluster diffs, pod alerts and Helm, in ~30 MB of RAM.",
+    "longDescription": "Kubellens is a fast, native Kubernetes desktop IDE built with Rust, Tauri, Tokio and React: an AI assistant (Claude, Gemini, OpenAI, Azure OpenAI or local Ollama) that answers questions about any cluster with secrets masked and proposes fixes you approve, TLS certificate expiry alerts, log search across pods, workload timelines, who-can-do-what RBAC queries, in-app updates, pod shell and smart logs, bulk image tags with live rollout tracking, cluster-to-cluster diffs, pod alerts and Helm, in ~30 MB of RAM.",
     "category": "DeveloperTool",
     "publisher": "Ashutosh Chandra",
     "macOS": {
