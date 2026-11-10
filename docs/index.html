@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kubellens — Kubernetes IDE in Rust</title>
+<meta name="description" content="Kubellens: a blazing-fast native Kubernetes IDE built with Rust, Tauri v2, Tokio, Axum and React 19. AI assistant for any cluster (Claude, Gemini, OpenAI, Azure OpenAI or local Ollama; secrets masked, fixes only on your approval), TLS certificate expiry alerts, log search across pods, workload timelines, RBAC who-can queries, pod shell, smart logs, bulk image tags with live rollouts, cluster-to-cluster diffs and pod alerts in ~30 MB of RAM. Zero Electron." />
+<meta property="og:title" content="Kubellens — Kubernetes IDE in Rust" />
+<meta property="og:description" content="Native Kubernetes desktop IDE. Starts in under 50 ms, runs in ~30 MB of RAM." />
+<meta property="og:image" content="assets/logo.png" />
+<meta name="theme-color" content="#05070f" />
+<link rel="icon" type="image/png" href="assets/favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #04060d;
+    --bg-2: #0a0e1c;
+    --panel: rgba(14, 20, 40, 0.55);
+    --panel-2: rgba(20, 28, 54, 0.65);
+    --border: rgba(140, 160, 255, 0.12);
+    --border-2: rgba(140, 170, 255, 0.28);
+    --text: #e9edff;
+    --muted: #8d95ba;
+    --cyan: #22d3ee;
+    --blue: #3b82f6;
+    --violet: #8b5cf6;
+    --orange: #f97316;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    /* ends on its first colour, so sliding (background-position) loops without a seam */
+    --grad: linear-gradient(110deg, var(--cyan), var(--blue) 25%, var(--violet) 50%, var(--orange) 75%, var(--cyan));
+    --ease: cubic-bezier(.22, 1, .36, 1);
+    --radius: 20px;
+  }
+  @property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 90px; }
+  body {
+    background:
+      radial-gradient(1100px 700px at 8% -8%, rgba(37, 99, 235, .16), transparent 60%),
+      radial-gradient(900px 640px at 100% 4%, rgba(124, 58, 237, .14), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(34, 211, 238, .3); }
+  a { color: inherit; text-decoration: none; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; }
+  code { font-size: .92em; background: rgba(255,255,255,.06); border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- page entrance ---------- */
+  body > * { animation: pageIn 1s var(--ease) both; }
+  @keyframes pageIn { from { opacity: 0; } }
+
+  /* ---------- background layers ---------- */
+  #cluster { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .75; }
+  .aurora { position: fixed; inset: -20%; z-index: 0; pointer-events: none; filter: blur(100px); opacity: .5; }
+  .aurora span { position: absolute; border-radius: 50%; mix-blend-mode: screen; animation: drift 26s ease-in-out infinite alternate; }
+  .aurora span:nth-child(1) { width: 46vw; height: 46vw; left: 5%;  top: 0;    background: radial-gradient(circle, #1d4ed8 0%, transparent 65%); }
+  .aurora span:nth-child(2) { width: 40vw; height: 40vw; right: 5%; top: 10%;  background: radial-gradient(circle, #7c3aed 0%, transparent 65%); animation-delay: -9s; }
+  .aurora span:nth-child(3) { width: 34vw; height: 34vw; left: 35%; top: 45%;  background: radial-gradient(circle, #0e7490 0%, transparent 65%); animation-delay: -17s; }
+  @keyframes drift { to { transform: translate(8vw, 6vh) scale(1.18); } }
+  .spotlight { position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background: radial-gradient(520px circle at var(--cx, 50%) var(--cy, 20%), rgba(56, 189, 248, .07), transparent 62%); }
+  .grain { position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: .045;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  main, header, footer, .marquee { position: relative; z-index: 2; }
+
+  /* ---------- nav: floating glass pill with a sliding active indicator ---------- */
+  nav { position: fixed; top: 14px; left: 0; right: 0; z-index: 50; padding: 0 16px; }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; padding: 0 10px 0 18px;
+    border-radius: 18px; border: 1px solid transparent; transition: max-width .6s var(--ease), background .5s, border-color .5s, box-shadow .5s; }
+  nav.scrolled .wrap { max-width: 1000px; background: rgba(7, 10, 22, .88); backdrop-filter: blur(18px) saturate(150%); -webkit-backdrop-filter: blur(18px) saturate(150%);
+    border-color: var(--border); box-shadow: 0 18px 50px -24px rgba(0, 0, 0, .9); }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .03em; }
+  .brand img { width: 30px; height: 30px; transition: transform .6s var(--ease); }
+  .brand:hover img { transform: rotate(-20deg) scale(1.08); }
+  .nav-links { position: relative; display: flex; gap: 2px; padding: 4px; font-size: 14px; color: var(--muted); }
+  .nav-links a { position: relative; z-index: 1; padding: 7px 14px; border-radius: 10px; transition: color .3s; }
+  .nav-links a:hover, .nav-links a.active { color: var(--text); }
+  .nav-ind { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 0; width: 0; border-radius: 10px; opacity: 0;
+    background: linear-gradient(135deg, rgba(34, 211, 238, .14), rgba(139, 92, 246, .14)); border: 1px solid var(--border-2);
+    transition: left .5s var(--ease), width .5s var(--ease), opacity .4s; }
+  @media (max-width: 760px) { .nav-links { display: none; } }
+
+  /* ---------- buttons ---------- */
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 22px; border-radius: 14px; font-weight: 600; font-size: 15px;
+    transition: transform .35s var(--ease), box-shadow .4s, background .3s, border-color .3s; position: relative; overflow: hidden; white-space: nowrap; will-change: transform; }
+  .btn svg { width: 18px; height: 18px; }
+  .btn-primary { background: var(--grad); background-size: 200% 100%; color: #fff; box-shadow: 0 10px 34px -10px rgba(59, 130, 246, .8), inset 0 1px 0 rgba(255,255,255,.25); animation: slide 6s linear infinite; }
+  .btn-primary::after { content: ""; position: absolute; inset: 0; background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,.45) 50%, transparent 70%); transform: translateX(-100%); animation: shine 3.4s ease-in-out infinite; }
+  .btn-primary:hover { box-shadow: 0 16px 44px -10px rgba(99, 102, 241, .95), inset 0 1px 0 rgba(255,255,255,.3); }
+  @keyframes shine { 60%, 100% { transform: translateX(100%); } }
+  @keyframes slide { to { background-position: 200% 0; } }
+  .btn-ghost { border: 1px solid var(--border); background: rgba(255,255,255,.035); backdrop-filter: blur(8px); }
+  .btn-ghost:hover { background: rgba(255,255,255,.08); border-color: var(--border-2); }
+  .btn:active { transform: scale(.97) !important; }
+  .btn-sm { padding: 9px 16px; font-size: 14px; border-radius: 12px; }
+
+  /* ---------- hero ---------- */
+  /* overflow-x: clip keeps the breathing glows from widening the page on phones (no scroll container is created) */
+  .hero { min-height: 100vh; display: flex; align-items: center; padding: 150px 0 90px; overflow-x: clip; }
+  .hero .wrap { display: grid; grid-template-columns: 1fr; gap: 72px; text-align: center; }
+  .hero-copy { position: relative; }
+  .hero-copy::before { content: ""; position: absolute; left: 50%; top: 42%; width: min(760px, 100vw); height: 360px; transform: translate(-50%, -50%); z-index: -1;
+    background: radial-gradient(closest-side, rgba(59, 130, 246, .22), transparent); filter: blur(30px); animation: breathe 7s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .55; transform: translate(-50%, -50%) scale(1.12); } }
+  .pill { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 8px; border-radius: 999px; border: 1px solid var(--border);
+    background: rgba(255,255,255,.04); backdrop-filter: blur(8px); font-size: 13px; color: var(--muted); margin: 0 auto; overflow: hidden; }
+  .pill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 35%, rgba(255,255,255,.12) 50%, transparent 65%); transform: translateX(-100%); animation: shine 5s ease-in-out infinite 1.5s; }
+  .pill b { background: rgba(34,197,94,.15); color: var(--green); padding: 2px 8px; border-radius: 999px; font-size: 11px; letter-spacing: .05em; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 rgba(34,197,94,.7); animation: ping 1.8s infinite; }
+  @keyframes ping { 70% { box-shadow: 0 0 0 10px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+
+  .logo-orbit { position: relative; width: 132px; height: 132px; margin: 26px auto 10px; }
+  .logo-orbit img { position: absolute; inset: 22px; width: 88px; height: 88px; filter: drop-shadow(0 0 26px rgba(59,130,246,.65)); animation: float 5s ease-in-out infinite; }
+  .logo-orbit svg { position: absolute; inset: 0; animation: spin 18s linear infinite; }
+  .logo-orbit svg.rev { animation-duration: 28s; animation-direction: reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes float { 50% { transform: translateY(-8px); } }
+
+  h1 { font-size: clamp(46px, 8.4vw, 104px); line-height: .98; font-weight: 900; letter-spacing: -.045em; }
+  .grad-text { background: var(--grad); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: slide 8s linear infinite; }
+  .split-word { display: inline-block; opacity: 0; filter: blur(14px); transform: translateY(.45em) scale(.96); animation: rise 1.1s var(--ease) forwards; }
+  @keyframes rise { to { opacity: 1; filter: blur(0); transform: none; } }
+  /* Text clipping doesn't reach transformed child boxes, so each animated word carries the gradient itself */
+  .grad-text .split-word { background: linear-gradient(110deg, var(--cyan), var(--blue) 33%, var(--violet) 66%, var(--cyan)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: rise 1.1s var(--ease) forwards, slide 8s linear infinite; }
+  .tagline { font-size: clamp(17px, 2.2vw, 21px); color: var(--muted); max-width: 720px; margin: 24px auto 0; min-height: 1.6em; }
+  .typer { color: var(--text); font-weight: 600; border-right: 2px solid var(--cyan); padding-right: 3px; animation: caret 1s step-end infinite; }
+  @keyframes caret { 50% { border-color: transparent; } }
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 38px; }
+  .stack { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 28px; }
+  .stack span { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 5px 11px; background: rgba(255,255,255,.025);
+    transition: transform .4s var(--ease), color .3s, border-color .3s, background .3s; }
+  .stack span:hover { transform: translateY(-3px); color: var(--text); border-color: var(--border-2); background: rgba(255,255,255,.05); }
+  .hero-in { opacity: 0; animation: heroIn 1s var(--ease) forwards; }
+  @keyframes heroIn { from { opacity: 0; transform: translateY(18px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+
+  /* ---------- app mock: 3D tilt that follows the pointer, light beam around the border ---------- */
+  .mock-stage { perspective: 2000px; position: relative; }
+  .mock-stage::before { content: ""; position: absolute; left: 10%; right: 10%; top: 12%; bottom: -8%; z-index: -1; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(34, 211, 238, .28), rgba(139, 92, 246, .18) 55%, transparent); filter: blur(50px); animation: breathe 8s ease-in-out infinite; }
+  .mock { position: relative; max-width: 1060px; margin: 0 auto; border-radius: 18px; border: 1px solid var(--border); background: rgba(7, 10, 21, .94);
+    box-shadow: 0 60px 140px -40px rgba(59,130,246,.55), 0 0 0 1px rgba(255,255,255,.03) inset; overflow: hidden; text-align: left;
+    transform: rotateX(var(--rx, 16deg)) rotateY(var(--ry, 0deg)) scale(var(--s, .94)); transform-origin: top center; transition: transform .7s var(--ease); }
+  .mock::before { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; z-index: 3; pointer-events: none;
+    background: conic-gradient(from var(--a), transparent 0 72%, rgba(34,211,238,.9), rgba(139,92,246,.9), transparent 96%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: rot 6s linear infinite; }
+  .mock-bar { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.02); }
+  .mock-bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .mock-bar .t { margin-left: 14px; font-size: 12px; color: var(--muted); }
+  .mock-body { display: grid; grid-template-columns: 200px 1fr; height: 440px; }
+  .mock-side { border-right: 1px solid var(--border); padding: 14px 10px; font-size: 12.5px; color: var(--muted); }
+  .mock-side .grp { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; opacity: .6; margin: 12px 8px 6px; }
+  .mock-side div.it { padding: 6px 10px; border-radius: 7px; display: flex; align-items: center; gap: 8px; transition: background .3s, color .3s; }
+  .mock-side div.it:hover { background: rgba(255,255,255,.04); color: var(--text); }
+  .mock-side div.it.on { background: rgba(59,130,246,.16); color: #cfe0ff; box-shadow: inset 2px 0 0 var(--cyan); }
+  .mock-side div.it::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: .5; }
+  .mock-main { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+  .mock-head { display: flex; justify-content: space-between; align-items: center; }
+  .mock-head h4 { font-size: 15px; }
+  .mock-head .search { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 7px; padding: 5px 10px; width: 210px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .kpi { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,.02); }
+  .kpi small { font-size: 10.5px; color: var(--muted); }
+  .kpi b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+  .sparkline { height: 22px; width: 100%; display: block; }
+  table.pods { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.pods th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 11px; }
+  table.pods td { padding: 7px 8px; border-bottom: 1px solid rgba(120,140,220,.06); white-space: nowrap; }
+  table.pods tr.new { animation: rowIn .7s var(--ease); }
+  @keyframes rowIn { from { opacity: 0; transform: translateX(-14px); background: rgba(34,211,238,.12); } }
+  .st { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 8px; border-radius: 999px; transition: all .5s var(--ease); }
+  .st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .st.Running { color: var(--green); background: rgba(34,197,94,.12); }
+  .st.Pending { color: var(--amber); background: rgba(245,158,11,.12); }
+  .st.Pending::before { animation: blink .8s infinite; }
+  .st.ContainerCreating { color: var(--cyan); background: rgba(34,211,238,.12); }
+  @keyframes blink { 50% { opacity: .2; } }
+  .logs { margin-top: auto; height: 92px; border: 1px solid var(--border); border-radius: 10px; background: #03050b; padding: 8px 12px; font-size: 11px; overflow: hidden; color: #9aa6d0; }
+  .logs div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: rowIn .4s var(--ease); }
+  .logs .lv-i { color: var(--cyan); } .logs .lv-w { color: var(--amber); } .logs .lv-o { color: var(--green); }
+  @media (max-width: 820px) {
+    .mock-body { grid-template-columns: 1fr; height: 400px; }
+    .mock-side { display: none; }
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .hide-sm { display: none; }
+  }
+
+  /* ---------- sections ---------- */
+  section { padding: 120px 0; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: var(--cyan);
+    padding: 6px 12px; border-radius: 999px; border: 1px solid rgba(34, 211, 238, .25); background: rgba(34, 211, 238, .06); }
+  .eyebrow::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+  h2 { font-size: clamp(32px, 4.8vw, 56px); line-height: 1.06; letter-spacing: -.035em; font-weight: 800; margin-top: 16px; }
+  .lead { color: var(--muted); font-size: 18px; max-width: 660px; margin-top: 18px; }
+  .center { text-align: center; } .center .lead { margin-left: auto; margin-right: auto; }
+
+  /* scroll reveal: fade, rise and unblur, staggered per group (--d set in JS) */
+  .reveal { opacity: 0; transform: translateY(36px) scale(.985); filter: blur(8px);
+    transition: opacity 1s var(--ease) var(--d, 0s), transform 1s var(--ease) var(--d, 0s), filter 1s var(--ease) var(--d, 0s); }
+  .reveal.in { opacity: 1; transform: none; filter: none; }
+
+  /* glass panel with a gradient edge that lights up on hover */
+  .glass { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .glass::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none; opacity: 0; transition: opacity .5s;
+    background: linear-gradient(135deg, rgba(34,211,238,.6), rgba(139,92,246,.5) 50%, rgba(249,115,22,.4));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .glass:hover::before { opacity: 1; }
+
+  /* ---------- stats ---------- */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 60px; }
+  .stat { position: relative; padding: 30px 26px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); overflow: hidden;
+    transition: transform .5s var(--ease), box-shadow .5s, opacity 1s var(--ease) var(--d, 0s), filter 1s var(--ease) var(--d, 0s); }
+  .stat:hover { transform: translateY(-6px); box-shadow: 0 30px 60px -30px rgba(34, 211, 238, .45); }
+  .stat::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; background: conic-gradient(from var(--a, 0deg), transparent 0 70%, var(--cyan), var(--violet), transparent);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: rot 5s linear infinite; }
+  .stat::after { content: ""; position: absolute; right: -40px; top: -40px; width: 140px; height: 140px; border-radius: 50%; background: radial-gradient(closest-side, rgba(59,130,246,.18), transparent); }
+  @keyframes rot { to { --a: 360deg; } }
+  .stat b { font-size: 48px; font-weight: 900; letter-spacing: -.035em; display: block; line-height: 1.1; font-variant-numeric: tabular-nums;
+    background: linear-gradient(180deg, #fff, #b7c4ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .stat span { color: var(--muted); font-size: 14px; }
+  @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---------- versus bars ---------- */
+  .versus { margin-top: 64px; display: grid; gap: 28px; padding: 32px; }
+  .vs-row h5 { font-size: 14px; font-weight: 600; margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .vs-row h5 em { font-style: normal; color: var(--muted); font-weight: 400; }
+  .bar { height: 32px; border-radius: 10px; background: rgba(255,255,255,.04); position: relative; margin-bottom: 8px; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 10px; display: flex; align-items: center; padding-left: 12px; font-style: normal; font-size: 12px; font-weight: 600; white-space: nowrap;
+    transition: width 1.8s var(--ease); overflow: hidden; }
+  .bar.old i { background: linear-gradient(90deg, #4b5563, #6b7280); color: #e5e7eb; }
+  .bar.new i { background: var(--grad); background-size: 200% 100%; animation: slide 4s linear infinite; color: #fff; box-shadow: 0 0 26px rgba(34,211,238,.6); }
+  .bar i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.18) 50%, transparent 70%); transform: translateX(-100%); animation: shine 3.5s ease-in-out infinite 2s; }
+
+  /* ---------- features: bento grid, spotlight + tilt on hover ---------- */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 60px; }
+  .card { position: relative; padding: 28px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); overflow: hidden;
+    transform-style: preserve-3d; transition: opacity 1s var(--ease) var(--d, 0s), transform 1s var(--ease) var(--d, 0s), filter 1s var(--ease) var(--d, 0s), border-color .4s, background .4s; }
+  .card.settled { transition: transform .35s var(--ease), border-color .4s, background .4s; }
+  .card::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .4s;
+    background: radial-gradient(380px circle at var(--mx, 50%) var(--my, 50%), rgba(59,130,246,.2), transparent 45%); }
+  .card:hover { border-color: rgba(120,160,255,.38); background: var(--panel-2); }
+  .card:hover::after { opacity: 1; }
+  .card .ico { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; margin-bottom: 18px;
+    background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(139,92,246,.18)); border: 1px solid var(--border); transition: transform .5s var(--ease), box-shadow .5s; }
+  .card:hover .ico { transform: translateY(-3px) rotate(-6deg) scale(1.06); box-shadow: 0 10px 30px -8px rgba(34, 211, 238, .6); }
+  .card .ico svg { width: 22px; height: 22px; stroke: #b9d7ff; }
+  .card h3 { font-size: 18px; margin-bottom: 8px; letter-spacing: -.01em; }
+  .card p { color: var(--muted); font-size: 14.5px; }
+  .card.lg { grid-column: span 2; padding: 34px; background: linear-gradient(135deg, rgba(34,211,238,.08), rgba(139,92,246,.08)), var(--panel); }
+  .card.lg h3 { font-size: 24px; }
+  .card.lg p { font-size: 16px; max-width: 560px; }
+  .card.lg .ico { width: 56px; height: 56px; }
+  .card.lg .ico svg { width: 28px; height: 28px; }
+  .features.collapsed .card:nth-child(n+13) { display: none; }
+  .more-wrap { display: flex; justify-content: center; margin-top: 30px; position: relative; }
+  .features.collapsed + .more-wrap::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 120px; pointer-events: none;
+    background: linear-gradient(transparent, var(--bg)); }
+  .more-wrap .btn svg { transition: transform .5s var(--ease); }
+  .more-wrap .btn.open svg { transform: rotate(180deg); }
+  @media (max-width: 960px) { .features { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .features { grid-template-columns: 1fr; } .card.lg { grid-column: auto; } }
+
+  /* ---------- architecture ---------- */
+  .arch { margin-top: 60px; padding: 30px; }
+  .arch svg { width: 100%; height: auto; display: block; }
+  .flow { stroke-dasharray: 6 8; animation: dash 1.2s linear infinite; }
+  .flow.slow { animation-duration: 2.4s; }
+  @keyframes dash { to { stroke-dashoffset: -28; } }
+  .arch text { font-family: Inter, sans-serif; }
+
+  /* ---------- terminal / quick start ---------- */
+  .qs { display: grid; grid-template-columns: 1fr 1.1fr; gap: 56px; align-items: center; }
+  @media (max-width: 900px) { .qs { grid-template-columns: 1fr; } }
+  .steps { margin-top: 30px; display: grid; gap: 14px; position: relative; }
+  .steps::before { content: ""; position: absolute; left: 17px; top: 18px; bottom: 18px; width: 2px; background: linear-gradient(var(--cyan), var(--violet), transparent); opacity: .35; }
+  .step { display: flex; gap: 16px; padding: 14px; margin-left: -14px; border-radius: 14px; transition: background .4s, transform .5s var(--ease); }
+  .step:hover { background: rgba(255,255,255,.03); transform: translateX(4px); }
+  .step b { position: relative; flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: linear-gradient(135deg, rgba(34,211,238,.25), rgba(139,92,246,.25)); color: #d6e6ff; font-size: 14px; border: 1px solid var(--border-2); }
+  .step p { color: var(--muted); font-size: 15px; } .step p strong { color: var(--text); }
+  .term { border-radius: var(--radius); border: 1px solid var(--border); background: #03050b; overflow: hidden; box-shadow: 0 40px 100px -36px rgba(139,92,246,.6); transition: transform .6s var(--ease), box-shadow .6s, opacity 1s var(--ease) var(--d, 0s), filter 1s var(--ease) var(--d, 0s); }
+  .term:hover { transform: translateY(-4px); box-shadow: 0 50px 110px -36px rgba(139,92,246,.75); }
+  .term .mock-bar .t { font-family: "JetBrains Mono", monospace; }
+  .term pre { padding: 20px; font-size: 13.5px; line-height: 1.75; min-height: 300px; white-space: pre-wrap; color: #c8d1f5; font-family: "JetBrains Mono", monospace; }
+  .term .p { color: var(--green); } .term .c { color: var(--muted); } .term .k { color: var(--cyan); } .term .o { color: var(--orange); }
+  .cursor { display: inline-block; width: 8px; height: 16px; background: var(--cyan); vertical-align: -3px; animation: caret 1s step-end infinite; }
+
+  /* ---------- marquee ---------- */
+  .marquee { overflow: hidden; border-block: 1px solid var(--border); padding: 18px 0; background: rgba(255,255,255,.012);
+    mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent); -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent); }
+  .marquee-track { display: flex; gap: 44px; width: max-content; animation: marq 42s linear infinite; }
+  .marquee:hover .marquee-track { animation-play-state: paused; }
+  .marquee-track span { color: var(--muted); font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 44px; transition: color .3s; }
+  .marquee-track span:hover { color: var(--text); }
+  .marquee-track span::after { content: "✦"; color: var(--violet); }
+  @keyframes marq { to { transform: translateX(-50%); } }
+
+  /* ---------- final cta ---------- */
+  .final-box { position: relative; text-align: center; border-radius: 30px; padding: 90px 30px; overflow: hidden; border: 1px solid var(--border);
+    background: radial-gradient(circle at 50% 0%, rgba(59,130,246,.28), transparent 60%), radial-gradient(circle at 50% 120%, rgba(139,92,246,.22), transparent 55%), var(--panel); }
+  .final-box .ring { position: absolute; left: 50%; top: 50%; border: 1px solid rgba(120,160,255,.2); border-radius: 50%; transform: translate(-50%, -50%); animation: pulse 6s ease-out infinite; }
+  .final-box .ring:nth-child(2) { animation-delay: -2s; } .final-box .ring:nth-child(3) { animation-delay: -4s; }
+  @keyframes pulse { from { width: 80px; height: 80px; opacity: 1; } to { width: 1100px; height: 1100px; opacity: 0; } }
+  .final-box > *:not(.ring) { position: relative; }
+
+  /* ---------- downloads ---------- */
+  .dl-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 60px; }
+  @media (max-width: 900px) { .dl-grid { grid-template-columns: 1fr; } }
+  .dl-card { position: relative; padding: 32px 26px 26px; border-radius: 22px; background: var(--panel); border: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 14px; overflow: hidden;
+    transition: transform .5s var(--ease), border-color .4s, box-shadow .5s, opacity 1s var(--ease) var(--d, 0s), filter 1s var(--ease) var(--d, 0s); }
+  .dl-card:hover { transform: translateY(-6px); border-color: var(--border-2); box-shadow: 0 30px 70px -34px rgba(59, 130, 246, .55); }
+  .dl-card.detected { border-color: transparent; box-shadow: 0 30px 80px -30px rgba(34,211,238,.6); }
+  .dl-card.detected::before { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none;
+    background: conic-gradient(from var(--a), rgba(34,211,238,.25), var(--cyan), var(--violet), rgba(34,211,238,.25));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: rot 5s linear infinite; }
+  .dl-card .badge { position: absolute; top: 16px; right: 16px; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+    background: rgba(34,211,238,.15); color: var(--cyan); display: none; }
+  .dl-card.detected .badge { display: inline-block; animation: pop .6s var(--ease) both 1s; }
+  @keyframes pop { from { opacity: 0; transform: scale(.6); } }
+  .dl-card .os-ico { width: 54px; height: 54px; border-radius: 15px; display: grid; place-items: center; border: 1px solid var(--border);
+    background: linear-gradient(135deg, rgba(34,211,238,.14), rgba(139,92,246,.14)); transition: transform .6s var(--ease); }
+  .dl-card:hover .os-ico { transform: scale(1.08) rotate(-4deg); }
+  .dl-card .os-ico svg { width: 28px; height: 28px; fill: #dbe7ff; }
+  .dl-card h3 { font-size: 21px; }
+  .dl-card .meta { color: var(--muted); font-size: 13.5px; margin-top: -8px; }
+  .dl-card .btns { display: flex; flex-direction: column; gap: 9px; margin-top: auto; }
+  .dl-card .btn { justify-content: center; }
+  .dl-card .btn.unavailable { opacity: .45; pointer-events: none; filter: grayscale(1); }
+  .dl-card .note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .dl-card .note code { font-size: 11px; }
+  .other-os { display: block; margin-top: 16px; font-size: 13px; color: var(--muted); }
+  .other-os a { color: var(--cyan); background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat; transition: background-size .4s var(--ease); }
+  .other-os a:hover { background-size: 100% 1px; }
+
+  /* live views / downloads counters */
+  .live-stats { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 24px; }
+  .live-stat { display: inline-flex; align-items: center; gap: 10px; padding: 9px 16px 9px 12px; border-radius: 14px;
+    border: 1px solid var(--border); background: rgba(255,255,255,.035); backdrop-filter: blur(8px); font-size: 13px; color: var(--muted);
+    transition: transform .4s var(--ease), border-color .3s; }
+  .live-stat:hover { transform: translateY(-2px); border-color: var(--border-2); }
+  .live-stat .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 14px;
+    background: linear-gradient(135deg, rgba(34,211,238,.18), rgba(139,92,246,.18)); }
+  .live-stat b { color: var(--text); font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .live-stat b.bump { animation: bump .6s ease-out; }
+  @keyframes bump { 30% { transform: scale(1.25); color: var(--cyan); } }
+  .live-stat .live { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 rgba(34,197,94,.7); animation: ping 1.8s infinite; }
+
+  /* download toast + burst */
+  .dl-toast { position: fixed; left: 50%; bottom: 28px; z-index: 80; transform: translate(-50%, 140%); opacity: 0;
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-radius: 16px; font-size: 14px;
+    background: rgba(10,14,28,.92); border: 1px solid rgba(34,211,238,.35); backdrop-filter: blur(12px);
+    box-shadow: 0 20px 60px -20px rgba(34,211,238,.6); transition: transform .6s cubic-bezier(.2,.9,.2,1.2), opacity .4s; }
+  .dl-toast.show { transform: translate(-50%, 0); opacity: 1; }
+  .dl-toast .spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(34,211,238,.2); border-top-color: var(--cyan); animation: spin .8s linear infinite; }
+  .burst { position: fixed; z-index: 90; width: 7px; height: 7px; border-radius: 2px; pointer-events: none; }
+
+  footer { padding: 40px 0 60px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; border-top: 1px solid var(--border); padding-top: 30px; }
+
+  #progress { position: fixed; top: 0; left: 0; height: 2px; width: 0; background: var(--grad); z-index: 60; box-shadow: 0 0 12px rgba(34,211,238,.7); }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .reveal, .split-word, .hero-in { opacity: 1; transform: none; filter: none; }
+    .mock { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<div class="aurora"><span></span><span></span><span></span></div>
+<canvas id="cluster"></canvas>
+<div class="spotlight"></div>
+<div class="grain"></div>
+
+<nav id="nav">
+  <div class="wrap">
+    <a href="#" class="brand"><img src="assets/logo.png" alt="" />KUBELLENS</a>
+    <div class="nav-links">
+      <span class="nav-ind" aria-hidden="true"></span>
+      <a href="#performance">Performance</a>
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#download">Download</a>
+      <a href="#start">Build</a>
+    </div>
+    <a class="btn btn-ghost btn-sm gh-link" href="#">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-copy">
+      <div class="pill hero-in" style="animation-delay:.05s"><span class="dot"></span><b>v1.7.0</b> Windows · macOS · Linux · Zero Electron</div>
+      <div class="logo-orbit hero-in" style="animation-delay:.15s">
+        <svg viewBox="0 0 132 132" fill="none">
+          <circle cx="66" cy="66" r="62" stroke="url(#g1)" stroke-width="1.5" stroke-dasharray="4 10" />
+          <circle cx="66" cy="4" r="4" fill="#22d3ee" />
+          <defs><linearGradient id="g1" x1="0" y1="0" x2="132" y2="132"><stop stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        </svg>
+        <svg class="rev" viewBox="0 0 132 132" fill="none">
+          <circle cx="66" cy="66" r="52" stroke="rgba(139,92,246,.45)" stroke-width="1" stroke-dasharray="60 24" />
+          <circle cx="118" cy="66" r="3" fill="#f97316" />
+        </svg>
+        <img src="assets/logo.png" alt="Kubellens logo" />
+      </div>
+      <h1 id="headline"><span data-split>Kubernetes,</span><br /><span class="grad-text" data-split>at Rust speed.</span></h1>
+      <p class="tagline hero-in" style="animation-delay:.6s">A native desktop IDE for your clusters — <span class="typer" id="typer"></span></p>
+      <div class="cta hero-in" style="animation-delay:.75s">
+        <a class="btn btn-primary dl-link magnetic" href="#download">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+          <span class="dl-label">Download Kubellens</span>
+        </a>
+        <a class="btn btn-ghost magnetic" href="#start">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9-3 3 3 3m8-6 3 3-3 3M14 5l-4 14"/></svg>
+          Build from source
+        </a>
+      </div>
+      <span class="other-os hero-in" style="animation-delay:.85s">Also available for <a href="#download">Windows, macOS &amp; Linux</a></span>
+      <div class="live-stats hero-in" style="animation-delay:.95s" aria-live="polite">
+        <span class="live-stat"><span class="ic">👁</span><b class="js-views">—</b> views <span class="live" title="Live"></span></span>
+        <span class="live-stat"><span class="ic">⬇</span><b class="js-downloads">—</b> downloads</span>
+      </div>
+      <div class="stack hero-in" style="animation-delay:1.05s"><span>🦀 Rust</span><span>Tauri v2</span><span>Tokio</span><span>Axum</span><span>React 19</span><span>Tailwind v4</span><span>Vite</span></div>
+    </div>
+
+    <!-- live app mock -->
+    <div class="mock-stage hero-in" style="animation-delay:.5s">
+      <div class="mock" id="mock">
+        <div class="mock-bar">
+          <i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i>
+          <span class="t">KUBELLENS — prod-eu-west · namespace: all</span>
+        </div>
+        <div class="mock-body">
+          <aside class="mock-side">
+            <div class="it">⚡ Smart Lens Studio</div>
+            <div class="grp">Cluster</div>
+            <div class="it">Overview</div><div class="it">Nodes</div><div class="it">Events</div>
+            <div class="grp">Workloads</div>
+            <div class="it on">Pods</div><div class="it">Deployments</div><div class="it">StatefulSets</div><div class="it">DaemonSets</div><div class="it">Jobs &amp; CronJobs</div>
+            <div class="grp">Network</div>
+            <div class="it">Services</div><div class="it">Ingresses</div>
+          </aside>
+          <div class="mock-main">
+            <div class="mock-head"><h4>Pods</h4><div class="search mono">⌕ filter pods…</div></div>
+            <div class="kpis">
+              <div class="kpi"><small>Pods running</small><b id="k-pods">0</b></div>
+              <div class="kpi"><small>CPU usage</small><b id="k-cpu">0%</b><svg class="sparkline" id="spark-cpu" viewBox="0 0 100 22" preserveAspectRatio="none"></svg></div>
+              <div class="kpi"><small>Memory</small><b id="k-mem">0 GiB</b><svg class="sparkline" id="spark-mem" viewBox="0 0 100 22" preserveAspectRatio="none"></svg></div>
+              <div class="kpi"><small>App RAM</small><b style="color:var(--green)">31 MB</b></div>
+            </div>
+            <table class="pods">
+              <thead><tr><th>Name</th><th class="hide-sm">Namespace</th><th>Status</th><th class="hide-sm">Node</th><th>Age</th></tr></thead>
+              <tbody id="pod-rows"></tbody>
+            </table>
+            <div class="logs mono" id="logs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-track" id="marquee"></div>
+</div>
+
+<main>
+  <section id="performance">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">Performance</div>
+        <h2>Lighter than a browser tab.<br /><span class="grad-text">Faster than a blink.</span></h2>
+        <p class="lead">Kubellens drops the Electron + Node.js stack for a single native Rust binary running a multi-threaded Tokio runtime inside the system WebView.</p>
+      </div>
+      <div class="stats">
+        <div class="stat reveal"><b data-count="50" data-prefix="&lt;" data-suffix=" ms">0</b><span>cold startup time</span></div>
+        <div class="stat reveal"><b data-count="25" data-suffix=" MB">0</b><span>RAM with 650+ pods loaded</span></div>
+        <div class="stat reveal"><b data-count="6" data-suffix=" MB">0</b><span>single native executable</span></div>
+        <div class="stat reveal"><b data-count="0" data-suffix=" ms">0</b><span>garbage-collection pauses</span></div>
+      </div>
+
+      <div class="versus glass reveal" id="versus">
+        <div class="vs-row">
+          <h5>Startup time <em>lower is better</em></h5>
+          <div class="bar old"><i data-w="100">Electron Freelens · ~4 s</i></div>
+          <div class="bar new"><i data-w="3">&nbsp;</i></div>
+          <small class="mono" style="color:var(--cyan)">Kubellens · &lt; 0.05 s</small>
+        </div>
+        <div class="vs-row">
+          <h5>Memory footprint <em>lower is better</em></h5>
+          <div class="bar old"><i data-w="100">Electron Freelens · ~600 MB</i></div>
+          <div class="bar new"><i data-w="7">&nbsp;</i></div>
+          <small class="mono" style="color:var(--cyan)">Kubellens · ~25–45 MB</small>
+        </div>
+        <div class="vs-row">
+          <h5>Frontend bundle <em>lower is better</em></h5>
+          <div class="bar old"><i data-w="100">Electron Freelens · ~8 MB</i></div>
+          <div class="bar new"><i data-w="6">&nbsp;</i></div>
+          <small class="mono" style="color:var(--cyan)">Kubellens · ~260 KB initial (lazy-loaded views)</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="reveal">
+        <div class="eyebrow">Features</div>
+        <h2>Everything you need to<br />run a cluster.</h2>
+        <p class="lead">Inspect, edit, scale and debug every core Kubernetes resource from one fast, keyboard-friendly window.</p>
+      </div>
+      <div class="features collapsed" id="feature-grid"></div>
+      <div class="more-wrap">
+        <button class="btn btn-ghost" id="more-features" type="button">
+          <span class="more-label">Show all features</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">Architecture</div>
+        <h2>One binary. <span class="grad-text">Zero runtime baggage.</span></h2>
+        <p class="lead">The React UI is embedded straight into the Rust executable. An Axum server on Tokio talks to your clusters and streams data back over SSE.</p>
+      </div>
+      <div class="arch glass reveal">
+        <svg viewBox="0 0 1000 340" role="img" aria-label="Architecture: React UI in WebView2 talks to an embedded Axum server on Tokio, which talks to Kubernetes clusters via kubeconfig">
+          <defs>
+            <linearGradient id="ga" x1="0" x2="1"><stop stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+            <linearGradient id="gb" x1="0" x2="1"><stop stop-color="#8b5cf6"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+            <filter id="glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <!-- outer binary box -->
+          <rect x="20" y="20" width="620" height="300" rx="18" fill="rgba(59,130,246,.05)" stroke="rgba(120,160,255,.3)" stroke-dasharray="5 6"/>
+          <text x="40" y="50" fill="#8b93b8" font-size="13" font-weight="600" letter-spacing="2">KUBELLENS.EXE · ~6 MB</text>
+
+          <!-- webview -->
+          <rect x="50" y="80" width="230" height="200" rx="14" fill="#0b1124" stroke="url(#ga)"/>
+          <text x="165" y="118" text-anchor="middle" fill="#e7ebff" font-size="17" font-weight="700">WebView2</text>
+          <text x="165" y="142" text-anchor="middle" fill="#8b93b8" font-size="13">React 19 · Tailwind v4</text>
+          <rect x="80" y="165" width="170" height="28" rx="7" fill="rgba(34,211,238,.1)"/><text x="165" y="184" text-anchor="middle" fill="#22d3ee" font-size="12">Views &amp; Modals</text>
+          <rect x="80" y="203" width="170" height="28" rx="7" fill="rgba(139,92,246,.12)"/><text x="165" y="222" text-anchor="middle" fill="#c4b5fd" font-size="12">YAML Editor · Logs</text>
+          <rect x="80" y="241" width="170" height="24" rx="7" fill="rgba(255,255,255,.04)"/><text x="165" y="258" text-anchor="middle" fill="#8b93b8" font-size="11">embedded via rust-embed</text>
+
+          <!-- rust core -->
+          <rect x="380" y="80" width="230" height="200" rx="14" fill="#0b1124" stroke="url(#gb)"/>
+          <text x="495" y="118" text-anchor="middle" fill="#e7ebff" font-size="17" font-weight="700">🦀 Rust Core</text>
+          <text x="495" y="142" text-anchor="middle" fill="#8b93b8" font-size="13">Tauri v2 · Tokio</text>
+          <rect x="410" y="165" width="170" height="28" rx="7" fill="rgba(249,115,22,.12)"/><text x="495" y="184" text-anchor="middle" fill="#fdba74" font-size="12">Axum REST + SSE</text>
+          <rect x="410" y="203" width="170" height="28" rx="7" fill="rgba(34,197,94,.12)"/><text x="495" y="222" text-anchor="middle" fill="#86efac" font-size="12">Port-forward manager</text>
+          <rect x="410" y="241" width="170" height="24" rx="7" fill="rgba(255,255,255,.04)"/><text x="495" y="258" text-anchor="middle" fill="#8b93b8" font-size="11">multi-threaded async</text>
+
+          <!-- cluster -->
+          <g transform="translate(760 70)">
+            <circle cx="100" cy="110" r="100" fill="rgba(34,211,238,.04)" stroke="rgba(34,211,238,.35)"/>
+            <polygon points="100,52 150,81 150,139 100,168 50,139 50,81" fill="none" stroke="#3b82f6" stroke-width="2" filter="url(#glow)">
+              <animateTransform attributeName="transform" type="rotate" from="0 100 110" to="360 100 110" dur="20s" repeatCount="indefinite"/>
+            </polygon>
+            <text x="100" y="106" text-anchor="middle" fill="#e7ebff" font-size="15" font-weight="700">Kubernetes</text>
+            <text x="100" y="126" text-anchor="middle" fill="#8b93b8" font-size="12">~/.kube/config</text>
+          </g>
+
+          <!-- flows -->
+          <path class="flow" d="M280 150 H380" stroke="#22d3ee" stroke-width="2.5" fill="none"/>
+          <path class="flow slow" d="M380 215 H280" stroke="#8b5cf6" stroke-width="2.5" fill="none"/>
+          <text x="330" y="140" text-anchor="middle" fill="#22d3ee" font-size="11">HTTP</text>
+          <text x="330" y="235" text-anchor="middle" fill="#a78bfa" font-size="11">SSE stream</text>
+          <path class="flow" d="M610 150 H760" stroke="#f97316" stroke-width="2.5" fill="none"/>
+          <path class="flow slow" d="M760 215 H610" stroke="#22c55e" stroke-width="2.5" fill="none"/>
+          <text x="685" y="140" text-anchor="middle" fill="#fdba74" font-size="11">kubectl / API</text>
+          <text x="685" y="235" text-anchor="middle" fill="#86efac" font-size="11">watch · logs</text>
+
+          <!-- packets -->
+          <circle r="5" fill="#22d3ee" filter="url(#glow)"><animateMotion dur="1.6s" repeatCount="indefinite" path="M280 150 H380"/></circle>
+          <circle r="5" fill="#a78bfa" filter="url(#glow)"><animateMotion dur="2.1s" repeatCount="indefinite" path="M380 215 H280"/></circle>
+          <circle r="5" fill="#f97316" filter="url(#glow)"><animateMotion dur="1.8s" repeatCount="indefinite" path="M610 150 H760"/></circle>
+          <circle r="5" fill="#22c55e" filter="url(#glow)"><animateMotion dur="2.3s" repeatCount="indefinite" path="M760 215 H610"/></circle>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <div class="center reveal">
+        <div class="eyebrow">Download</div>
+        <h2>Get Kubellens for<br /><span class="grad-text">your platform.</span></h2>
+        <p class="lead">One small native installer. Just make sure <code>kubectl</code> is on your PATH, and Kubellens picks up every context in <code>~/.kube/config</code>.</p>
+        <div class="live-stats">
+          <span class="live-stat"><span class="ic">⬇</span><b class="js-downloads">—</b> total downloads</span>
+          <span class="live-stat"><span class="ic">👁</span><b class="js-views">—</b> page views <span class="live" title="Live"></span></span>
+        </div>
+      </div>
+
+      <div class="dl-grid">
+        <div class="dl-card reveal" data-os="windows">
+          <span class="badge">✓ Your system</span>
+          <div class="os-ico"><svg viewBox="0 0 24 24"><path d="M3 5.5 10.5 4.5v7H3v-6Zm0 13 7.5 1v-7H3v6Zm8.5 1.1L21 21v-8.5h-9.5v7.1Zm0-15.2v7.1H21V3l-9.5 1.4Z"/></svg></div>
+          <h3>Windows</h3>
+          <div class="meta">Windows 10 / 11 · x64 · 1.8 MB</div>
+          <div class="btns">
+            <a class="btn btn-primary" href="downloads/kubellens-setup.exe" download="kubellens-setup.exe" data-dl="Windows installer">⬇ Download installer (.exe)</a>
+            <a class="btn btn-ghost" data-asset="kubellens.exe" data-dl="Windows portable app">Portable .exe</a>
+          </div>
+          <p class="note">If SmartScreen appears, choose <b>More info → Run anyway</b>.</p>
+        </div>
+
+        <div class="dl-card reveal" data-os="mac">
+          <span class="badge">✓ Your system</span>
+          <div class="os-ico"><svg viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.5 2-3.7 2.1-3.8-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.8.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.6-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.3.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.8-1.1-2.8-4.2ZM13.9 5.1c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.2 1.2.1 2.3-.6 3-1.5Z"/></svg></div>
+          <h3>macOS</h3>
+          <div class="meta">Universal · Apple Silicon &amp; Intel · macOS 10.15+</div>
+          <div class="btns">
+            <a class="btn btn-primary" data-asset="kubellens-macos-universal.dmg" data-dl="macOS app">⬇ Download for Mac (.dmg)</a>
+          </div>
+          <p class="note">The app is not notarized yet. After moving it to Applications, right-click → <b>Open</b> the first time, or run <code>xattr -cr /Applications/Kubellens.app</code>.</p>
+        </div>
+
+        <div class="dl-card reveal" data-os="linux">
+          <span class="badge">✓ Your system</span>
+          <div class="os-ico"><svg viewBox="0 0 24 24"><path d="M12 2c-2 0-3.2 1.7-3.2 4 0 1.3.3 2.2-.4 3.4-.8 1.5-2.9 3.7-2.9 6.6 0 .8.2 1.5.5 2.1-.8.4-1.6 1-1.6 1.8 0 1.2 1.9 1.4 3.4 1.9 1 .3 1.6.7 2.4.7.9 0 1.4-.6 1.8-.9h3.9c.4.3.9.9 1.8.9.8 0 1.4-.4 2.4-.7 1.5-.5 3.4-.7 3.4-1.9 0-.8-.8-1.4-1.6-1.8.3-.6.5-1.3.5-2.1 0-2.9-2.1-5.1-2.9-6.6-.7-1.2-.4-2.1-.4-3.4C15.2 3.7 14 2 12 2Zm-1.6 4.3c.4 0 .7.5.7 1.1s-.3 1.1-.7 1.1-.7-.5-.7-1.1.3-1.1.7-1.1Zm3.2 0c.4 0 .7.5.7 1.1s-.3 1.1-.7 1.1-.7-.5-.7-1.1.3-1.1.7-1.1ZM12 9.3c.9 0 2 .6 2 1 0 .4-1.1 1.1-2 1.1s-2-.7-2-1.1c0-.4 1.1-1 2-1Z"/></svg></div>
+          <h3>Linux</h3>
+          <div class="meta">x86_64 · Ubuntu 22.04+, Debian, Fedora, and more</div>
+          <div class="btns">
+            <a class="btn btn-primary" data-asset="kubellens-linux-amd64.AppImage" data-dl="Linux AppImage">⬇ AppImage (any distro)</a>
+            <a class="btn btn-ghost" data-asset="kubellens-linux-amd64.deb" data-dl="Debian / Ubuntu package">.deb (Debian / Ubuntu)</a>
+            <a class="btn btn-ghost" data-asset="kubellens-linux-x86_64.rpm" data-dl="Fedora / RHEL package">.rpm (Fedora / RHEL)</a>
+          </div>
+          <p class="note">AppImage: <code>chmod +x kubellens-linux-amd64.AppImage</code> then run it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap qs">
+      <div class="reveal">
+        <div class="eyebrow">Build from source</div>
+        <h2>Up and running<br />in three steps.</h2>
+        <div class="steps">
+          <div class="step"><b>1</b><p><strong>Install the toolchain.</strong> Rust (stable) and <code>bun</code>. On Linux also <code>libwebkit2gtk-4.1-dev</code>; Windows and macOS already ship a WebView.</p></div>
+          <div class="step"><b>2</b><p><strong>Build.</strong> On Windows run <code>scripts\build.bat</code>; on macOS / Linux run <code>bun x @tauri-apps/cli@2 build</code>. Installers land in <code>target/release/bundle/</code>.</p></div>
+          <div class="step"><b>3</b><p><strong>Launch.</strong> Kubellens auto-discovers every context in <code>~/.kube/config</code>. Pick one and go.</p></div>
+        </div>
+      </div>
+      <div class="term reveal">
+        <div class="mock-bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">PowerShell — kubellens</span></div>
+        <pre id="term"></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="final-box reveal">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <div class="eyebrow">Ready when you are</div>
+        <h2 style="margin-bottom:28px">Give your cluster<br /><span class="grad-text">a faster lens.</span></h2>
+        <div class="cta">
+          <a class="btn btn-primary dl-link magnetic" href="#download"><span class="dl-label">Download Kubellens</span></a>
+          <a class="btn btn-ghost gh-link magnetic" href="#">★ Star on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© <span id="yr"></span> Kubellens · Built with 🦀 by Ashutosh Chandra</span>
+    <span class="mono">Rust · Tauri v2 · Tokio · Axum · React 19</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const finePointer = matchMedia('(pointer: fine)').matches;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  $('#yr').textContent = new Date().getFullYear();
+
+  /* ---- downloads: repo links, OS detection, release availability ---- */
+  (() => {
+    // Repo comes from the Pages URL (owner.github.io/repo); fall back to the canonical repo locally
+    const m = location.hostname.match(/^([^.]+)\.github\.io$/);
+    const pathRepo = location.pathname.split('/').filter(Boolean)[0];
+    const REPO = m && pathRepo ? `${m[1]}/${pathRepo}` : 'Axhutoxh/kubelens';
+    const base = `https://github.com/${REPO}`;
+    $$('.gh-link').forEach(a => a.href = base);
+
+    /* ---- live counters ----
+       GitHub Pages is static, so views and in-repo installer downloads are kept in Abacus,
+       a free hosted counter API. Release-asset downloads come from GitHub's own counts.
+       Local previews only read the counters so testing doesn't inflate them. */
+    const COUNTER_API = 'https://abacus.jasoncameron.dev';
+    const NS = REPO.toLowerCase().replace(/[^a-z0-9_.-]/g, '-');
+    const isLive = !!m;
+    const fmt = n => n.toLocaleString();
+    const showCount = (sel, n, animate) => $$(sel).forEach(el => {
+      const from = parseInt((el.textContent || '').replace(/\D/g, ''), 10) || 0;
+      if (!animate || reduce || from === n) { el.textContent = fmt(n); return; }
+      const t0 = performance.now(), dur = 1200;
+      const step = now => {
+        const p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+        el.textContent = fmt(Math.round(from + (n - from) * e));
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+    const bump = sel => $$(sel).forEach(el => { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); });
+    const counter = (action, key) =>
+      fetch(`${COUNTER_API}/${action}/${NS}/${key}`, { keepalive: true })
+        .then(r => r.status === 404 ? { value: 0 } : r.ok ? r.json() : Promise.reject(r.status))
+        .then(d => d.value || 0);
+
+    // Every visit / refresh counts as one view
+    counter(isLive ? 'hit' : 'get', 'views')
+      .then(v => showCount('.js-views', v, true))
+      .catch(() => {});
+
+    // Downloads = installer served from this site + every asset of every GitHub release
+    let downloads = 0;
+    Promise.all([
+      counter('get', 'site-downloads').catch(() => 0),
+      fetch(`https://api.github.com/repos/${REPO}/releases?per_page=100`)
+        .then(r => r.ok ? r.json() : [])
+        .then(rels => rels.reduce((sum, rel) => sum + (rel.assets || []).reduce((s, a) => s + (a.download_count || 0), 0), 0))
+        .catch(() => 0),
+    ]).then(([site, releases]) => {
+      downloads += site + releases; // += keeps any clicks made before the counts arrived
+      showCount('.js-downloads', downloads, true);
+    });
+    const trackSiteDownload = () => {
+      downloads += 1;
+      showCount('.js-downloads', downloads, false);
+      bump('.js-downloads');
+      if (isLive) counter('hit', 'site-downloads').catch(() => {});
+    };
+
+    // Release assets use fixed names, so "latest/download/<name>" always points at the newest build
+    const assetLinks = $$('[data-asset]');
+    assetLinks.forEach(a => a.href = `${base}/releases/latest/download/${a.dataset.asset}`);
+
+    const plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    const ua = navigator.userAgent;
+    const os = /android|iphone|ipad/i.test(ua) ? null
+      : /win/i.test(plat) ? 'windows'
+      : /mac/i.test(plat) ? 'mac'
+      : /linux|x11|cros/i.test(plat + ua) ? 'linux' : null;
+    const OS_NAME = { windows: 'Windows', mac: 'macOS', linux: 'Linux' };
+    const card = os && $(`.dl-card[data-os="${os}"]`);
+    if (card) card.classList.add('detected');
+
+    // Hero / closing buttons download straight away for the visitor's OS
+    const syncHero = () => {
+      const primary = card && $('.btn-primary:not(.unavailable)', card);
+      $$('.dl-link').forEach(a => {
+        a.href = primary ? primary.getAttribute('href') : '#download';
+        if (primary) { a.setAttribute('download', ''); a.dataset.dl = primary.dataset.dl; } else { a.removeAttribute('download'); delete a.dataset.dl; }
+        $('.dl-label', a).textContent = primary ? `Download for ${OS_NAME[os]}` : 'Download Kubellens';
+      });
+    };
+    syncHero();
+
+    // Mark assets that aren't in the latest release yet, instead of linking to a 404
+    fetch(`https://api.github.com/repos/${REPO}/releases/latest`)
+      .then(r => r.status === 404 ? { assets: [] } : r.ok ? r.json() : null)
+      .then(rel => {
+        if (!rel) return; // API unreachable or rate limited: keep the links as they are
+        const have = new Set((rel.assets || []).map(x => x.name));
+        assetLinks.forEach(a => {
+          if (have.has(a.dataset.asset)) return;
+          a.classList.add('unavailable');
+          a.setAttribute('aria-disabled', 'true');
+          a.removeAttribute('href');
+          a.textContent = a.textContent.replace(/^⬇\s*/, '') + ' · coming soon';
+        });
+        if (rel.tag_name) $$('.pill b').forEach(b => b.textContent = rel.tag_name);
+        syncHero();
+      })
+      .catch(() => {});
+
+    // Feedback on click: toast + a small burst from the button
+    const toast = document.createElement('div');
+    toast.className = 'dl-toast';
+    toast.innerHTML = '<span class="spin"></span><span class="msg"></span>';
+    document.body.append(toast);
+    let hideTimer;
+    const burst = (x, y) => {
+      if (reduce) return;
+      const colors = ['#22d3ee', '#3b82f6', '#8b5cf6', '#f97316', '#22c55e'];
+      for (let i = 0; i < 22; i++) {
+        const s = document.createElement('span');
+        s.className = 'burst';
+        s.style.left = x + 'px'; s.style.top = y + 'px';
+        s.style.background = colors[i % colors.length];
+        document.body.append(s);
+        const ang = Math.random() * Math.PI * 2, dist = 50 + Math.random() * 90;
+        s.animate([
+          { transform: 'translate(-50%,-50%) scale(1) rotate(0deg)', opacity: 1 },
+          { transform: `translate(${Math.cos(ang) * dist - 3}px, ${Math.sin(ang) * dist + 40}px) scale(.3) rotate(${Math.random() * 540}deg)`, opacity: 0 },
+        ], { duration: 800 + Math.random() * 500, easing: 'cubic-bezier(.2,.8,.3,1)' }).onfinish = () => s.remove();
+      }
+    };
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a[data-dl]');
+      if (!a || !a.getAttribute('href')) return;
+      // Files served from this site are counted here; release assets are counted by GitHub
+      if (a.getAttribute('href').startsWith('downloads/')) {
+        trackSiteDownload();
+      } else {
+        downloads += 1;
+        showCount('.js-downloads', downloads, false);
+        bump('.js-downloads');
+      }
+      $('.msg', toast).innerHTML = `Downloading <b>${a.dataset.dl}</b> — thanks for trying Kubellens!`;
+      toast.classList.add('show');
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => toast.classList.remove('show'), 3800);
+      burst(e.clientX, e.clientY);
+    });
+  })();
+
+  /* ---- nav, scroll progress, mock tilt (scroll + pointer) ---- */
+  const nav = $('#nav'), prog = $('#progress'), mock = $('#mock');
+  const tilt = { scroll: 0, x: 0, y: 0 };
+  const applyTilt = () => {
+    if (reduce || !mock) return;
+    const t = tilt.scroll;
+    mock.style.setProperty('--rx', `${16 - 16 * t - tilt.y * 5}deg`);
+    mock.style.setProperty('--ry', `${tilt.x * 7}deg`);
+    mock.style.setProperty('--s', `${.94 + .06 * t}`);
+  };
+  const onScroll = () => {
+    nav.classList.toggle('scrolled', scrollY > 20);
+    const h = document.documentElement.scrollHeight - innerHeight;
+    prog.style.width = (h > 0 ? scrollY / h * 100 : 0) + '%';
+    // the app mock tilts flat as you scroll
+    tilt.scroll = Math.min(1, scrollY / (innerHeight * .6));
+    applyTilt();
+  };
+  addEventListener('scroll', onScroll, { passive: true }); onScroll();
+  if (!reduce && finePointer && mock) {
+    const stage = $('.mock-stage');
+    stage.addEventListener('pointermove', e => {
+      const r = stage.getBoundingClientRect();
+      tilt.x = (e.clientX - r.left) / r.width - .5;
+      tilt.y = (e.clientY - r.top) / r.height - .5;
+      applyTilt();
+    });
+    stage.addEventListener('pointerleave', () => { tilt.x = 0; tilt.y = 0; applyTilt(); });
+  }
+
+  /* ---- cursor spotlight ---- */
+  if (!reduce && finePointer) {
+    const spot = $('.spotlight');
+    let raf = 0, px = 0, py = 0;
+    addEventListener('pointermove', e => {
+      px = e.clientX; py = e.clientY;
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; spot.style.setProperty('--cx', px + 'px'); spot.style.setProperty('--cy', py + 'px'); });
+    }, { passive: true });
+  }
+
+  /* ---- nav: highlight the section in view with a sliding indicator ---- */
+  const navLinks = $$('.nav-links a'), ind = $('.nav-ind');
+  const moveInd = a => {
+    if (!a) { ind.style.opacity = 0; navLinks.forEach(l => l.classList.remove('active')); return; }
+    navLinks.forEach(l => l.classList.toggle('active', l === a));
+    ind.style.left = a.offsetLeft + 'px';
+    ind.style.width = a.offsetWidth + 'px';
+    ind.style.opacity = 1;
+  };
+  const spy = new IntersectionObserver(entries => entries.forEach(en => {
+    if (en.isIntersecting) moveInd(navLinks.find(a => a.getAttribute('href') === '#' + en.target.id));
+  }), { rootMargin: '-45% 0px -50% 0px' });
+  navLinks.forEach(a => { const s = $(a.getAttribute('href')); if (s) spy.observe(s); });
+  new IntersectionObserver(([en]) => { if (en.isIntersecting) moveInd(null); }, { threshold: .4 }).observe($('.hero'));
+
+  /* ---- magnetic buttons ---- */
+  if (!reduce && finePointer) $$('.magnetic').forEach(b => {
+    b.addEventListener('pointermove', e => {
+      const r = b.getBoundingClientRect();
+      b.style.transform = `translate(${(e.clientX - r.left - r.width / 2) * .18}px, ${(e.clientY - r.top - r.height / 2) * .25}px)`;
+    });
+    b.addEventListener('pointerleave', () => b.style.transform = '');
+  });
+
+  /* ---- headline word split ---- */
+  let d = 0;
+  $$('[data-split]').forEach(el => {
+    el.innerHTML = el.textContent.split(' ').map(w => `<span class="split-word" style="animation-delay:${(d++) * .13 + .25}s">${w}</span>`).join(' ');
+  });
+
+  /* ---- typewriter ---- */
+  const phrases = ['starts in under 50 ms.', 'runs in ~30 MB of RAM.', 'streams logs with zero GC pauses.', 'ships as one native binary.', 'no Electron. No Node. Just Rust.'];
+  const typer = $('#typer');
+  if (reduce) typer.textContent = phrases[0];
+  else (async function loop() {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    await sleep(900);
+    for (let i = 0; ; i = (i + 1) % phrases.length) {
+      for (const ch of phrases[i]) { typer.textContent += ch; await sleep(42); }
+      await sleep(1800);
+      while (typer.textContent) { typer.textContent = typer.textContent.slice(0, -1); await sleep(18); }
+      await sleep(250);
+    }
+  })();
+
+  /* ---- marquee ---- */
+  const tags = ['Pods', 'Deployments', 'StatefulSets', 'DaemonSets', 'Jobs', 'CronJobs', 'Services', 'Ingresses', 'ConfigMaps', 'Secrets', 'PVCs', 'PersistentVolumes', 'StorageClasses', 'Nodes', 'Namespaces', 'Events', 'Port-forward', 'Live logs', 'YAML apply'];
+  $('#marquee').innerHTML = [...tags, ...tags].map(t => `<span>${t}</span>`).join('');
+
+  /* ---- features ---- */
+  const icon = p => `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const feats = [
+    ['AI Chat for any cluster', 'Ask Claude, Gemini, OpenAI, Azure OpenAI or a local Ollama model about any cluster and namespace. Answers come from live lookups; it proposes fixes you apply with one click, and secrets stay masked unless you allow them.', '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>'],
+    ['MCP server built in', 'Run Kubellens --mcp to give Claude Desktop, Claude Code or Gemini CLI the same read-only cluster tools and masking.', '<path d="M9 2v6M15 2v6M7 8h10v4a5 5 0 0 1-10 0z"/><path d="M12 17v5"/>'],
+    ['TLS certificate expiry', 'Every TLS Secret with its domains, issuer and the Ingresses using it. Alerts 30, 7 and 1 days before a certificate expires.', '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><path d="M12 15v3"/>'],
+    ['Log search across pods', 'Find an error in every replica at once: wildcard pod filters, regex, time windows, results merged by time.', '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/>'],
+    ['What changed, and when', 'A timeline per workload: rollouts with image changes, restarts and OOM kills, ConfigMap edits and events in one list.', '<path d="M12 3v18"/><circle cx="12" cy="7" r="2"/><circle cx="12" cy="17" r="2"/><path d="M14 7h6M4 17h6"/>'],
+    ['Who can do what', 'Ask who can read Secrets or exec into pods, or see everything a service account may do. Straight from RBAC.', '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M17 11l2 2 4-4"/>'],
+    ['Updates itself', 'New releases show up in the top bar with their notes. One click downloads, verifies the checksum and installs.', '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'],
+    ['Bulk image tags + live rollouts', 'Set one tag on many deployments, watch every rollout live, catch image pull failures and undo the whole batch in one click.', '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>'],
+    ['Environment diff', 'Compare two clusters or namespaces side by side: image tags, env, resources and ConfigMaps, key by key.', '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6M18 15V9a3 3 0 0 0-3-3H9"/>'],
+    ['Smarter logs', 'Crashed-container logs, time ranges, colour-coded errors, regex filters, JSON pretty-print and one-click download.', '<path d="M4 6h16M4 12h10M4 18h7"/><path d="m16 16 2 2 4-4"/>'],
+    ['Find in text', 'Ctrl+F inside ConfigMaps and YAML with in-place highlights and a "3 of 12" counter.', '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6"/>'],
+    ['Pod alerts', 'Crash loops, OOM kills, image pull failures and evictions surface the moment they happen.', '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>'],
+    ['Workspaces', 'Save cluster + namespace + view + filter and jump back in one click.', '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'],
+    ['Pod shell', 'A real terminal inside any container: bash, vim, top and tab completion over a native PTY.', '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>'],
+    ['Live CPU & memory', 'Per-pod usage columns and per-node utilisation bars from metrics-server.', '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>'],
+    ['Rollback in one click', 'Deployment revision history with images and change causes; roll back to any revision.', '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>'],
+    ['Helm releases', 'Values, manifests, notes and history for every release, plus rollback and uninstall.', '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12M3 7l9 5 9-5"/>'],
+    ['Bulk actions & combined logs', 'Multi-select pods to delete them together or stream all their logs in one colour-coded view.', '<rect x="3" y="4" width="4" height="4" rx="1"/><rect x="3" y="10" width="4" height="4" rx="1"/><rect x="3" y="16" width="4" height="4" rx="1"/><path d="M10 6h11M10 12h11M10 18h11"/>'],
+    ['Command palette', 'Ctrl+K to jump to any pod, deployment, view, namespace or context instantly.', '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'],
+    ['Custom resources', 'Browse any CRD with its own printer columns: cert-manager, Istio, ArgoCD, Prometheus and more.', '<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>'],
+    ['Node maintenance', 'Cordon, uncordon and drain nodes, with a safe default and an explicit force option.', '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>'],
+    ['Multi-cluster contexts', 'Auto-discovers every context in ~/.kube/config with instant live switching.', '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 16m4.5-8.5L13 16M9 6h6"/>'],
+    ['Workloads, fully', 'Pods, Deployments, StatefulSets, DaemonSets — scale, restart and roll out from one place.', '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>'],
+    ['Live log streaming', 'Server-Sent Events piped straight from Tokio processes. No buffering, no GC hiccups.', '<path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1.5"/>'],
+    ['YAML inspector & apply', 'Edit manifests inline and apply them to the live cluster in a click.', '<path d="m8 8-4 4 4 4m8-8 4 4-4 4"/><path d="M14 4 10 20"/>'],
+    ['Port-forwarding', 'Background session manager with auto-assigned local ports and one-click stop.', '<path d="M4 12h12m0 0-4-4m4 4-4 4"/><path d="M20 4v16"/>'],
+    ['Jobs & CronJobs', 'Completions, durations, suspend toggles and “Trigger Job Now”.', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
+    ['Storage 3-in-1', 'PVCs, PersistentVolumes and StorageClasses with capacity and binding status.', '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>'],
+    ['ConfigMaps & Secrets', 'Edit in place, review a diff before applying, then restart the workloads that use it. Base64 built in.', '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>'],
+    ['Networking', 'Services, cluster IPs, port mappings, Ingress routing rules and TLS hosts.', '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'],
+  ];
+  const grid = $('#feature-grid');
+  // The first card is the headline feature and gets a wide bento tile
+  grid.innerHTML = feats.map(([t, p, i], k) =>
+    `<div class="card reveal${k === 0 ? ' lg' : ''}"><div class="ico">${icon(i)}</div><h3>${t}</h3><p>${p}</p></div>`).join('');
+
+  // Show the first dozen; the rest open with a staggered reveal
+  const moreBtn = $('#more-features');
+  const visibleWhenCollapsed = 12;
+  $('.more-label', moreBtn).textContent = `Show all ${feats.length} features`;
+  moreBtn.addEventListener('click', () => {
+    const opening = grid.classList.contains('collapsed');
+    grid.classList.toggle('collapsed', !opening);
+    moreBtn.classList.toggle('open', opening);
+    $('.more-label', moreBtn).textContent = opening ? 'Show fewer' : `Show all ${feats.length} features`;
+    if (opening) {
+      $$('.card', grid).slice(visibleWhenCollapsed).forEach((c, k) => {
+        c.classList.remove('in', 'settled');
+        c.style.setProperty('--d', `${(k % 3) * .07 + Math.floor(k / 3) * .05}s`);
+        requestAnimationFrame(() => requestAnimationFrame(() => io.observe(c)));
+      });
+    } else {
+      $('#features').scrollIntoView({ behavior: reduce ? 'auto' : 'smooth' });
+    }
+  });
+
+  /* ---- card tilt + spotlight ---- */
+  if (!reduce && finePointer) $$('.card').forEach(c => {
+    c.addEventListener('pointermove', e => {
+      if (!c.classList.contains('settled')) return;
+      const r = c.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      c.style.setProperty('--mx', x * 100 + '%'); c.style.setProperty('--my', y * 100 + '%');
+      c.style.transform = `perspective(900px) rotateY(${(x - .5) * 8}deg) rotateX(${(.5 - y) * 8}deg) translateY(-4px)`;
+    });
+    c.addEventListener('pointerleave', () => c.style.transform = '');
+  });
+
+  /* ---- scroll reveal (staggered per group), counters, bars ---- */
+  const groups = new Map();
+  $$('.reveal').forEach(el => {
+    if (el.style.getPropertyValue('--d')) return;
+    const k = groups.get(el.parentElement) || 0;
+    groups.set(el.parentElement, k + 1);
+    // cards in a grid stagger by column and row; other groups one after another
+    const delay = el.classList.contains('card') ? (k % 3) * .08 + Math.min(3, Math.floor(k / 3)) * .04 : Math.min(k, 6) * .1;
+    el.style.setProperty('--d', `${delay}s`);
+  });
+  const countUp = el => {
+    const end = +el.dataset.count, pre = el.dataset.prefix || '', suf = el.dataset.suffix || '';
+    if (reduce || end === 0) { el.textContent = pre + end + suf; return; }
+    const t0 = performance.now(), dur = 1600;
+    const step = now => {
+      const p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 4);
+      el.textContent = pre + Math.round(end * e) + suf;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
+  const io = new IntersectionObserver(entries => entries.forEach(en => {
+    if (!en.isIntersecting) return;
+    const el = en.target;
+    el.classList.add('in');
+    if (el.classList.contains('card')) {
+      // after the entrance, switch to quick transitions for the hover tilt
+      const ms = (parseFloat(el.style.getPropertyValue('--d')) || 0) * 1000 + 1000;
+      setTimeout(() => el.classList.add('settled'), ms);
+    }
+    if (el.dataset.count !== undefined) countUp(el);
+    $$('[data-count]', el).forEach(countUp);
+    if (el.id === 'versus') $$('.bar i', el).forEach((b, k) => setTimeout(() => b.style.width = b.dataset.w + '%', 200 + k * 160));
+    if (el.classList.contains('term')) runTerminal();
+    io.unobserve(el);
+  }), { threshold: .15, rootMargin: '0px 0px -40px 0px' });
+  $$('.reveal').forEach(el => io.observe(el));
+
+  /* ---- terminal ---- */
+  let termStarted = false;
+  function runTerminal() {
+    if (termStarted) return; termStarted = true;
+    const lines = [
+      ['<span class="p">PS&gt;</span> <span class="k">git</span> clone …/kubellens.git && cd kubellens', 30],
+      ['<span class="p">PS&gt;</span> <span class="k">.\\scripts\\build.bat</span>', 30],
+      ['<span class="c">[1/2] Compiling React 19 Frontend Dashboard…</span>', 0],
+      ['  vite v6 building for production…  <span class="p">✓</span> 254 KB initial (lazy views)', 0],
+      ['<span class="c">[2/2] Packaging Native Tauri Release…</span>', 0],
+      ['  <span class="o">Compiling</span> freelens-rust v1.7.0 (release, lto=fat)', 0],
+      ['  <span class="p">Finished</span> release in 1m 42s', 0],
+      ['  <span class="p">✓</span> release\\kubellens-setup.exe', 0],
+      ['<span class="p">PS&gt;</span> <span class="k">.\\release\\kubellens.exe</span>', 30],
+      ['<span class="p">▲ Kubellens ready in 41 ms</span> · contexts: prod-eu-west, staging, kind-local', 0],
+    ];
+    const pre = $('#term'); let html = '';
+    if (reduce) { pre.innerHTML = lines.map(l => l[0]).join('\n'); return; }
+    (async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      for (const [line, typeSpeed] of lines) {
+        if (typeSpeed) {
+          // type out the visible text, then swap in the colored markup
+          const tmp = document.createElement('div'); tmp.innerHTML = line; const plain = tmp.textContent;
+          for (let i = 1; i <= plain.length; i++) { pre.innerHTML = html + plain.slice(0, i).replace(/</g, '&lt;') + '<span class="cursor"></span>'; await sleep(typeSpeed); }
+          await sleep(300);
+        } else await sleep(380);
+        html += line + '\n';
+        pre.innerHTML = html + '<span class="cursor"></span>';
+      }
+    })();
+  }
+
+  /* ---- live app mock: pods, KPIs, sparklines, logs ---- */
+  const apps = ['api-gateway', 'auth-svc', 'payments', 'orders', 'redis-master', 'kafka-broker', 'search-indexer', 'web-frontend', 'notifier', 'billing-worker', 'postgres', 'metrics-agent'];
+  const nss = ['prod', 'prod', 'payments', 'platform', 'data', 'monitoring'];
+  const rnd = a => a[Math.floor(Math.random() * a.length)];
+  const hash = () => Math.random().toString(36).slice(2, 7);
+  const rows = $('#pod-rows');
+  let podCount = 642;
+  const addPod = () => {
+    const tr = document.createElement('tr'); tr.className = 'new';
+    tr.innerHTML = `<td class="mono">${rnd(apps)}-${hash()}</td><td class="hide-sm">${rnd(nss)}</td><td><span class="st Pending">Pending</span></td><td class="hide-sm mono">node-${1 + Math.floor(Math.random() * 6)}</td><td>0s</td>`;
+    rows.prepend(tr);
+    while (rows.children.length > 5) rows.lastElementChild.remove();
+    const st = $('.st', tr);
+    setTimeout(() => { st.className = 'st ContainerCreating'; st.textContent = 'Creating'; }, 900);
+    setTimeout(() => { st.className = 'st Running'; st.textContent = 'Running'; podCount++; $('#k-pods').textContent = podCount; }, 1900);
+  };
+  for (let i = 0; i < 5; i++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="mono">${rnd(apps)}-${hash()}</td><td class="hide-sm">${rnd(nss)}</td><td><span class="st Running">Running</span></td><td class="hide-sm mono">node-${1 + i}</td><td>${2 + i * 3}d</td>`;
+    rows.append(tr);
+  }
+  // ages tick
+  setInterval(() => $$('td:last-child', rows).forEach(td => { const m = td.textContent.match(/^(\d+)s$/); if (m) td.textContent = (+m[1] + 1) + 's'; }), 1000);
+
+  const sparks = { cpu: Array.from({ length: 30 }, () => 40 + Math.random() * 20), mem: Array.from({ length: 30 }, () => 55 + Math.random() * 10) };
+  const drawSpark = (id, data, color) => {
+    const pts = data.map((v, i) => `${(i / (data.length - 1)) * 100},${22 - v / 100 * 22}`).join(' ');
+    $(id).innerHTML = `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/><polygon points="0,22 ${pts} 100,22" fill="${color}" opacity=".12"/>`;
+  };
+  const tickKpis = () => {
+    const nc = Math.max(20, Math.min(90, sparks.cpu.at(-1) + (Math.random() - .5) * 14));
+    const nm = Math.max(40, Math.min(85, sparks.mem.at(-1) + (Math.random() - .5) * 5));
+    sparks.cpu.push(nc); sparks.cpu.shift(); sparks.mem.push(nm); sparks.mem.shift();
+    $('#k-cpu').textContent = Math.round(nc) + '%';
+    $('#k-mem').textContent = (nm * .64).toFixed(1) + ' GiB';
+    drawSpark('#spark-cpu', sparks.cpu, '#22d3ee'); drawSpark('#spark-mem', sparks.mem, '#8b5cf6');
+  };
+  $('#k-pods').textContent = podCount;
+  tickKpis();
+
+  const logsEl = $('#logs');
+  const logMsgs = [
+    ['i', 'GET /api/v1/orders 200 3ms'], ['i', 'GET /healthz 200 0ms'], ['o', 'connected to postgres pool (size=16)'],
+    ['w', 'slow query 212ms on orders_by_user'], ['i', 'POST /api/v1/checkout 201 18ms'], ['o', 'cache warm: 18,442 keys'],
+    ['i', 'kafka consumer lag=0 partition=3'], ['i', 'GET /api/v1/search?q=k8s 200 7ms'], ['w', 'retrying webhook (attempt 2/5)'],
+  ];
+  const addLog = () => {
+    const [lv, msg] = rnd(logMsgs);
+    const t = new Date().toISOString().slice(11, 23);
+    const div = document.createElement('div');
+    div.innerHTML = `<span style="opacity:.5">${t}</span> <span class="lv-${lv}">${lv === 'w' ? 'WARN' : 'INFO'}</span> ${msg}`;
+    logsEl.append(div);
+    while (logsEl.children.length > 5) logsEl.firstElementChild.remove();
+  };
+  for (let i = 0; i < 5; i++) addLog();
+
+  if (!reduce) {
+    setInterval(addPod, 2600);
+    setInterval(tickKpis, 900);
+    setInterval(addLog, 650);
+  }
+
+  /* ---- background: animated cluster graph ---- */
+  const cv = $('#cluster'), ctx = cv.getContext('2d');
+  let W, H, DPR, nodes = [], pulses = [], mouse = { x: -1e4, y: -1e4 };
+  const COLORS = ['34,211,238', '59,130,246', '139,92,246', '249,115,22'];
+  const resize = () => {
+    DPR = Math.min(2, devicePixelRatio || 1);
+    W = cv.width = innerWidth * DPR; H = cv.height = innerHeight * DPR;
+    cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px';
+    const n = Math.round(Math.min(80, innerWidth * innerHeight / 20000));
+    nodes = Array.from({ length: n }, () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - .5) * .22 * DPR, vy: (Math.random() - .5) * .22 * DPR,
+      r: (Math.random() < .12 ? 3.2 : 1.6) * DPR, c: rnd(COLORS), ph: Math.random() * 6.28,
+    }));
+  };
+  addEventListener('resize', resize); resize();
+  addEventListener('pointermove', e => { mouse.x = e.clientX * DPR; mouse.y = e.clientY * DPR; }, { passive: true });
+
+  const LINK = 150;
+  const frame = t => {
+    ctx.clearRect(0, 0, W, H);
+    const link = LINK * DPR;
+    for (const n of nodes) {
+      n.x += n.vx; n.y += n.vy;
+      if (n.x < 0 || n.x > W) n.vx *= -1;
+      if (n.y < 0 || n.y > H) n.vy *= -1;
+      // gentle mouse repulsion
+      const dx = n.x - mouse.x, dy = n.y - mouse.y, dd = dx * dx + dy * dy;
+      if (dd < (120 * DPR) ** 2) { n.x += dx / Math.sqrt(dd) * .8; n.y += dy / Math.sqrt(dd) * .8; }
+    }
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
+      if (d2 < link * link) {
+        const o = 1 - Math.sqrt(d2) / link;
+        ctx.strokeStyle = `rgba(${a.c},${o * .18})`; ctx.lineWidth = DPR * .7;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        if (!reduce && Math.random() < .0009) pulses.push({ a, b, p: 0, c: a.c });
+      }
+    }
+    for (const n of nodes) {
+      const g = .6 + .4 * Math.sin(t / 900 + n.ph);
+      ctx.fillStyle = `rgba(${n.c},${.3 + .45 * g})`;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 6.283); ctx.fill();
+      if (n.r > 2 * DPR) { ctx.strokeStyle = `rgba(${n.c},${.22 * g})`; ctx.beginPath(); ctx.arc(n.x, n.y, n.r * 3 * g, 0, 6.283); ctx.stroke(); }
+    }
+    pulses = pulses.filter(p => (p.p += .018) < 1);
+    for (const p of pulses) {
+      const x = p.a.x + (p.b.x - p.a.x) * p.p, y = p.a.y + (p.b.y - p.a.y) * p.p;
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, 7 * DPR);
+      gr.addColorStop(0, `rgba(${p.c},.95)`); gr.addColorStop(1, `rgba(${p.c},0)`);
+      ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 7 * DPR, 0, 6.283); ctx.fill();
+    }
+    if (!reduce) requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
