@@ -67,3 +67,11 @@ export function splitMatches(text: string, re: RegExp | null): string[] {
   parts.push(text.slice(last));
   return parts;
 }
+
+// Stable colour per pod in combined log views and search results
+const POD_COLORS = ['text-cyan-400', 'text-violet-400', 'text-amber-400', 'text-emerald-400', 'text-pink-400', 'text-sky-400', 'text-lime-400', 'text-orange-400'];
+export function podColor(s: string) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return POD_COLORS[Math.abs(h) % POD_COLORS.length];
+}

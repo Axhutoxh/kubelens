@@ -7,7 +7,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   Tag,
-  Cpu
+  Cpu,
+  GitCommitVertical
 } from 'lucide-react';
 import { DaemonSetItem } from '../types/k8s';
 import { parseImage } from './DeploymentsView';
@@ -18,6 +19,7 @@ interface DaemonSetsViewProps {
   onRestart: (kind: string, name: string, namespace: string) => void;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+  onOpenTimeline?: (name: string, namespace: string) => void;
 }
 
 export const DaemonSetsView: React.FC<DaemonSetsViewProps> = ({
@@ -26,6 +28,7 @@ export const DaemonSetsView: React.FC<DaemonSetsViewProps> = ({
   onRestart,
   onOpenManifest,
   onDelete,
+  onOpenTimeline,
 }) => {
   const filtered = daemonSets.filter((d) => {
     const name = d.metadata.name.toLowerCase();
@@ -162,6 +165,13 @@ export const DaemonSetsView: React.FC<DaemonSetsViewProps> = ({
                         >
                           <RotateCw className="w-3.5 h-3.5" />
                         </button>
+                        {onOpenTimeline && (<button
+                          onClick={() => onOpenTimeline(ds.metadata.name, ds.metadata.namespace || 'default')}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                          title="Timeline: what changed and when"
+                        >
+                          <GitCommitVertical className="w-3.5 h-3.5" />
+                        </button>)}
                         <button
                           onClick={() => onOpenManifest('daemonsets', ds.metadata.name, ds.metadata.namespace || 'default')}
                           className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"

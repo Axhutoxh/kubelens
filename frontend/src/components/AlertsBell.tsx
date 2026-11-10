@@ -20,6 +20,8 @@ const REASON_TONE: Record<string, string> = {
   CrashLoopBackOff: 'text-rose-300 bg-rose-950/60 border-rose-800/70',
   ImagePullBackOff: 'text-amber-300 bg-amber-950/60 border-amber-800/70',
   ErrImagePull: 'text-amber-300 bg-amber-950/60 border-amber-800/70',
+  'Certificate expires within 30 days': 'text-amber-300 bg-amber-950/60 border-amber-800/70',
+  'Certificate expires within 7 days': 'text-rose-300 bg-rose-950/60 border-rose-800/70',
 };
 
 function ago(ts: number) {
@@ -29,7 +31,7 @@ function ago(ts: number) {
   return `${Math.floor(s / 3600)}h ago`;
 }
 
-/** Top-bar bell with the pod alert feed (crash loops, OOM kills, image pull failures). */
+/** Top-bar bell with the alert feed: pod problems (crash loops, OOM kills, image pull failures) and TLS certificate expiry. */
 export const AlertsBell: React.FC<AlertsBellProps> = ({
   alerts,
   enabled,
@@ -68,7 +70,7 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
         className={`relative p-1.5 rounded-md border transition-colors cursor-pointer ${
           unread > 0 ? 'text-rose-300 border-rose-700/70 bg-rose-950/40' : 'text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
         }`}
-        title={enabled ? `${unread} new pod alert(s)` : 'Pod alerts are off'}
+        title={enabled ? `${unread} new alert(s)` : 'Alerts are off'}
       >
         <Icon className={`w-3.5 h-3.5 ${unread > 0 ? 'animate-pulse' : ''}`} />
         {unread > 0 && (
@@ -81,7 +83,7 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
       {open && (
         <div className="absolute right-0 top-9 z-50 w-[26rem] max-h-[70vh] flex flex-col bg-slate-900 border border-slate-700 rounded-lg shadow-2xl overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-200">Pod alerts</span>
+            <span className="text-xs font-semibold text-slate-200">Alerts</span>
             <div className="flex items-center gap-2 text-[11px]">
               <button onClick={onClear} disabled={alerts.length === 0} className="text-slate-400 hover:text-slate-200 disabled:opacity-40">Clear</button>
               <button onClick={onToggleEnabled} className={enabled ? 'text-slate-400 hover:text-rose-300' : 'text-cyan-300 hover:text-cyan-200'}>
@@ -109,10 +111,10 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
 
           <div className="flex-1 overflow-auto">
             {!enabled ? (
-              <div className="p-4 text-xs text-slate-500">Alerts are off. Turn them on to watch pods in the selected namespace.</div>
+              <div className="p-4 text-xs text-slate-500">Alerts are off. Turn them on to watch pods in the selected namespace and the cluster's TLS certificates.</div>
             ) : alerts.length === 0 ? (
               <div className="p-4 text-xs text-slate-500">
-                No problems. Watching pods in the selected namespace for crash loops, OOM kills, image pull failures and evictions.
+                No problems. Watching pods in the selected namespace for crash loops, OOM kills, image pull failures and evictions, and TLS certificates for expiry (30, 7 and 1 days).
               </div>
             ) : (
               alerts.map((a) => (

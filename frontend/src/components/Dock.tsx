@@ -18,11 +18,25 @@ import {
   Regex,
   Braces,
   History,
-  Search
+  Search,
+  Bookmark,
+  BookmarkCheck,
+  Filter
 } from 'lucide-react';
 import { applyManifest, multiLogsUrl, saveTextFile } from '../api/client';
 import { FindBar, HighlightTextarea, findMatches } from './FindInText';
-import { LEVEL_RANK, LogLevel, compileFilter, logLevel, prettyJson, splitMatches } from '../utils/logs';
+import {
+  LogBookmark,
+  SavedLogFilter,
+  inWorkspace,
+  linePod,
+  loadBookmarks,
+  loadLogFilters,
+  logText,
+  storeBookmarks,
+  storeLogFilters,
+} from '../utils/logBookmarks';
+import { LEVEL_RANK, LogLevel, compileFilter, logLevel, podColor as colorFor, prettyJson, splitMatches } from '../utils/logs';
 
 // xterm.js is only downloaded the first time a shell is opened
 const ShellTerminal = lazy(() => import('./ShellTerminal'));
@@ -69,15 +83,12 @@ interface DockProps {
   onCloseTask: (id: string) => void;
   onUpdateTask?: (id: string, patch: Partial<DockTask>) => void;
   onToast?: (message: string, type?: 'success' | 'error') => void;
+  /** Workspace that saved filters and bookmarks belong to (null: none active) */
+  workspace?: { id: string; name: string } | null;
+  /** Opens a pod's log tab (used to jump to a bookmarked line) */
+  onOpenLogs?: (pod: string, namespace: string, containers: string[], context?: string) => void;
 }
 
-// Stable colour per pod in combined log views
-const POD_COLORS = ['text-cyan-400', 'text-violet-400', 'text-amber-400', 'text-emerald-400', 'text-pink-400', 'text-sky-400', 'text-lime-400', 'text-orange-400'];
-const colorFor = (s: string) => {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return POD_COLORS[Math.abs(h) % POD_COLORS.length];
-};
 // `kubectl logs --prefix` lines look like "[pod/<name>/<container>] message"
 const PREFIX_RE = /^\[pod\/([^/\]]+)\/([^\]]+)\] ?(.*)$/;
 
@@ -89,10 +100,14 @@ const LEVEL_CLASSES: Record<NonNullable<LogLevel>, string> = {
 
 interface LogLineProps {
   line: string;
+  lineKey: number;
   level: LogLevel;
   combined: boolean;
   highlight: RegExp | null;
   pretty: boolean;
+  bookmarked: boolean;
+  flash: boolean;
+  onBookmark: (line: string) => void;
 }
 
 const Highlighted: React.FC<{ text: string; re: RegExp | null }> = ({ text, re }) => (
@@ -104,8 +119,10 @@ const Highlighted: React.FC<{ text: string; re: RegExp | null }> = ({ text, re }
 );
 
 // Memoised: with stable keys, a new batch of lines only renders the new rows
-const LogLine = React.memo<LogLineProps>(({ line, level, combined, highlight, pretty }) => {
-  const base = `hover:bg-slate-900/60 px-1 rounded whitespace-pre-wrap break-all ${level ? LEVEL_CLASSES[level] : ''}`;
+const LogLine = React.memo<LogLineProps>(({ line, lineKey, level, combined, highlight, pretty, bookmarked, flash, onBookmark }) => {
+  const base = `group relative hover:bg-slate-900/60 px-1 pr-6 rounded whitespace-pre-wrap break-all ${level ? LEVEL_CLASSES[level] : ''} ${
+    flash ? 'ring-1 ring-cyan-400 bg-cyan-500/15' : bookmarked ? 'bg-cyan-950/30' : ''
+  }`;
   if (line.startsWith('[kubellens]')) {
     return <div className="px-1 text-amber-400/90 whitespace-pre-wrap break-all">{line}</div>;
   }
@@ -125,9 +142,16 @@ const LogLine = React.memo<LogLineProps>(({ line, level, combined, highlight, pr
   }
   const shown = (pretty && prettyJson(message)) || message;
   return (
-    <div className={base}>
+    <div className={base} data-logkey={lineKey}>
       {prefix}
       <Highlighted text={shown} re={highlight} />
+      <button
+        onClick={() => onBookmark(line)}
+        title={bookmarked ? 'Remove bookmark' : 'Bookmark this line'}
+        className={`absolute right-1 top-0.5 p-0.5 rounded ${bookmarked ? 'text-cyan-300' : 'text-slate-600 opacity-0 group-hover:opacity-100 hover:text-cyan-300'}`}
+      >
+        {bookmarked ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />}
+      </button>
     </div>
   );
 });
@@ -141,6 +165,8 @@ export const Dock: React.FC<DockProps> = ({
   onCloseTask,
   onUpdateTask,
   onToast,
+  workspace = null,
+  onOpenLogs,
 }) => {
   const activeTask = tasks.find((t) => t.id === activeTaskId) || tasks[0];
 
@@ -305,6 +331,134 @@ export const Dock: React.FC<DockProps> = ({
     }
     return out;
   }, [logs, logBuf.dropped, filter, levelFilter]);
+
+  // Saved filters and bookmarked lines (per workspace)
+  const workspaceId = workspace?.id ?? null;
+  const [savedFilters, setSavedFilters] = useState<SavedLogFilter[]>(loadLogFilters);
+  const [bookmarks, setBookmarks] = useState<LogBookmark[]>(loadBookmarks);
+  const [savedOpen, setSavedOpen] = useState(false);
+  const [filterName, setFilterName] = useState('');
+  const [jump, setJump] = useState<{ text: string; until: number } | null>(null);
+  const [flashKey, setFlashKey] = useState<number | null>(null);
+  const savedMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!savedOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (savedMenuRef.current && !savedMenuRef.current.contains(e.target as Node)) setSavedOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [savedOpen]);
+
+  const scopedFilters = savedFilters.filter((f) => inWorkspace(f.workspaceId, workspaceId));
+  const scopedBookmarks = bookmarks.filter((b) => inWorkspace(b.workspaceId, workspaceId)).slice().reverse();
+
+  const saveFilter = () => {
+    const name = filterName.trim();
+    if (!name) return;
+    const entry: SavedLogFilter = { id: `lf-${Date.now()}`, name, workspaceId, filter: logFilter, regex: useRegex, level: levelFilter, pretty: prettyJsonLines };
+    const next = [...savedFilters.filter((f) => !(f.name === name && f.workspaceId === workspaceId)), entry];
+    setSavedFilters(next);
+    storeLogFilters(next);
+    setFilterName('');
+    onToast?.(`Saved filter "${name}"${workspace ? ` in workspace ${workspace.name}` : ''}`);
+  };
+  const applySavedFilter = (f: SavedLogFilter) => {
+    setLogFilter(f.filter);
+    setUseRegex(f.regex);
+    setLevelFilter(f.level);
+    setPrettyJsonLines(f.pretty);
+    setSavedOpen(false);
+  };
+  const deleteFilter = (id: string) => {
+    const next = savedFilters.filter((f) => f.id !== id);
+    setSavedFilters(next);
+    storeLogFilters(next);
+  };
+
+  // Pod / container a line belongs to in the active tab
+  const lineOwner = (line: string) => {
+    if (!activeTask) return null;
+    if (activeTask.type === 'multilogs') {
+      const p = linePod(line);
+      if (!p) return null;
+      const ns = activeTask.targets?.find((t) => t.name === p.pod)?.namespace || activeTask.namespace || 'default';
+      return { pod: p.pod, container: p.container, namespace: ns };
+    }
+    if (activeTask.type === 'logs' && activeTask.pod && activeTask.namespace) {
+      return { pod: activeTask.pod, container: selectedContainer, namespace: activeTask.namespace };
+    }
+    return null;
+  };
+  const toggleBookmark = (line: string) => {
+    const owner = lineOwner(line);
+    if (!owner) return;
+    const text = logText(line);
+    const ctx = activeTask?.context || '';
+    const existing = bookmarks.find((b) => b.pod === owner.pod && b.namespace === owner.namespace && b.text === text && (b.context || '') === ctx);
+    const next = existing
+      ? bookmarks.filter((b) => b !== existing)
+      : [...bookmarks, { id: `bm-${Date.now()}`, workspaceId, context: activeTask?.context, namespace: owner.namespace, pod: owner.pod, container: owner.container || undefined, text, savedAt: Date.now() }];
+    setBookmarks(next);
+    storeBookmarks(next);
+  };
+  // Stable for the memoised log lines
+  const toggleBookmarkRef = useRef(toggleBookmark);
+  toggleBookmarkRef.current = toggleBookmark;
+  const onBookmarkLine = React.useCallback((line: string) => toggleBookmarkRef.current(line), []);
+
+  const bookmarkedKeys = useMemo(
+    () => new Set(bookmarks.filter((b) => (b.context || '') === (activeTask?.context || '')).map((b) => `${b.pod}|${b.text}`)),
+    [bookmarks, activeTask?.context]
+  );
+  const isBookmarked = (line: string) => {
+    if (bookmarkedKeys.size === 0) return false;
+    const owner = activeTask?.type === 'multilogs' ? linePod(line)?.pod : activeTask?.pod;
+    return !!owner && bookmarkedKeys.has(`${owner}|${logText(line)}`);
+  };
+
+  const removeBookmark = (id: string) => {
+    const next = bookmarks.filter((b) => b.id !== id);
+    setBookmarks(next);
+    storeBookmarks(next);
+  };
+  const openBookmark = (b: LogBookmark) => {
+    setSavedOpen(false);
+    setLogFilter('');
+    setLevelFilter('all');
+    const taskId = `logs-${b.context || 'default'}-${b.namespace}-${b.pod}`;
+    if (activeTask?.id === taskId) {
+      if (b.container) setSelectedContainer(b.container);
+    } else if (tasks.some((t) => t.id === taskId)) {
+      if (b.container) onUpdateTask?.(taskId, { container: b.container });
+      onSelectTask(taskId);
+    } else if (onOpenLogs) {
+      onOpenLogs(b.pod, b.namespace, b.container ? [b.container] : [], b.context);
+    }
+    // Look further back than the default 200 lines
+    setSince('24h');
+    setJump({ text: b.text, until: Date.now() + 10000 });
+  };
+
+  // Scroll to a bookmarked line once the stream has delivered it
+  useEffect(() => {
+    if (!jump) return;
+    const hit = visibleLogs.find((v) => logText(v.line) === jump.text);
+    if (hit) {
+      setIsFollowing(false);
+      setFlashKey(hit.key);
+      setJump(null);
+      requestAnimationFrame(() => document.querySelector(`[data-logkey="${hit.key}"]`)?.scrollIntoView({ block: 'center' }));
+      const t = setTimeout(() => setFlashKey(null), 2500);
+      return () => clearTimeout(t);
+    }
+    const t = setTimeout(() => {
+      setJump(null);
+      onToast?.('That line is no longer in the pod\'s logs (pod replaced or logs rotated)', 'error');
+    }, Math.max(0, jump.until - Date.now()));
+    return () => clearTimeout(t);
+  }, [jump, visibleLogs]);
 
   const yamlMatches = useMemo(() => findMatches(yamlContent, yamlQuery, { caseSensitive: yamlCase }).length, [yamlContent, yamlQuery, yamlCase]);
   useEffect(() => setYamlActive(0), [yamlQuery, yamlCase]);
@@ -560,6 +714,69 @@ export const Dock: React.FC<DockProps> = ({
             <Braces className="w-3.5 h-3.5" />
           </button>
 
+          {/* Saved filters & bookmarks */}
+          <div className="relative" ref={savedMenuRef}>
+            <button
+              onClick={() => setSavedOpen((o) => !o)}
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${savedOpen ? 'text-cyan-300 border-cyan-700 bg-slate-800' : 'text-slate-400 border-slate-800 hover:text-slate-200'}`}
+              title={`Saved filters and bookmarked lines${workspace ? ` (workspace ${workspace.name})` : ''}`}
+            >
+              <Bookmark className="w-3.5 h-3.5" />
+              <span>Saved</span>
+              {scopedBookmarks.length + scopedFilters.length > 0 && <span className="text-slate-500 tabular-nums">{scopedBookmarks.length + scopedFilters.length}</span>}
+            </button>
+            {savedOpen && (
+              <div className="absolute left-0 top-7 z-40 w-[26rem] max-h-64 overflow-auto bg-slate-900 border border-slate-700 rounded-lg shadow-2xl text-[11px]">
+                <div className="px-3 py-1.5 border-b border-slate-800 text-[10px] text-slate-500">
+                  {workspace ? <>Workspace <span className="text-cyan-300">{workspace.name}</span>; items saved without a workspace show everywhere</> : 'No workspace active: items are shown in every workspace'}
+                </div>
+                <div className="px-3 py-2 border-b border-slate-800 space-y-1.5">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Filters</div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={filterName}
+                      onChange={(e) => setFilterName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveFilter(); }}
+                      placeholder={logFilter || levelFilter !== 'all' ? 'Name the current filter…' : 'Set a filter or level first'}
+                      disabled={!logFilter && levelFilter === 'all'}
+                      className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                    />
+                    <button onClick={saveFilter} disabled={!filterName.trim()} className="px-2 py-0.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-semibold disabled:opacity-40">Save</button>
+                  </div>
+                  {scopedFilters.length === 0 ? (
+                    <div className="text-slate-600">No saved filters.</div>
+                  ) : scopedFilters.map((f) => (
+                    <div key={f.id} className="group flex items-center gap-2">
+                      <button onClick={() => applySavedFilter(f)} className="flex-1 min-w-0 text-left hover:text-cyan-300 flex items-center gap-1.5">
+                        <Filter className="w-3 h-3 text-slate-500 shrink-0" />
+                        <span className="text-slate-200 truncate">{f.name}</span>
+                        <span className="font-mono text-slate-500 truncate">{f.regex ? `/${f.filter}/` : f.filter}{f.level !== 'all' ? ` · ${f.level === 'error' ? 'errors' : 'warn+'}` : ''}</span>
+                      </button>
+                      <button onClick={() => deleteFilter(f.id)} className="p-0.5 text-slate-600 hover:text-rose-400 opacity-0 group-hover:opacity-100" title="Delete filter"><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-3 py-2 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Bookmarked lines</div>
+                  {scopedBookmarks.length === 0 ? (
+                    <div className="text-slate-600">Hover a log line and click its bookmark icon to keep it here.</div>
+                  ) : scopedBookmarks.map((b) => (
+                    <div key={b.id} className="group flex items-start gap-2">
+                      <button onClick={() => openBookmark(b)} className="flex-1 min-w-0 text-left hover:bg-slate-800/60 rounded px-1 -mx-1" title={`${b.namespace}/${b.pod}${b.context ? ` [${b.context}]` : ''}\n${b.text}`}>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`font-mono truncate ${colorFor(b.pod)}`}>{b.pod}</span>
+                          <span className="ml-auto text-[10px] text-slate-600 shrink-0">{new Date(b.savedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+                        </div>
+                        <div className="font-mono text-slate-400 truncate">{b.text}</div>
+                      </button>
+                      <button onClick={() => removeBookmark(b.id)} className="p-0.5 mt-0.5 text-slate-600 hover:text-rose-400 opacity-0 group-hover:opacity-100" title="Remove bookmark"><Trash2 className="w-3 h-3" /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <span className="ml-auto text-slate-500 tabular-nums">
             {visibleLogs.length === logs.length ? `${logs.length} lines` : `${visibleLogs.length} of ${logs.length} lines`}
           </span>
@@ -604,10 +821,14 @@ export const Dock: React.FC<DockProps> = ({
                 <LogLine
                   key={key}
                   line={line}
+                  lineKey={key}
                   level={level}
                   combined={activeTask.type === 'multilogs'}
                   highlight={filter.highlight}
                   pretty={prettyJsonLines}
+                  bookmarked={isBookmarked(line)}
+                  flash={flashKey === key}
+                  onBookmark={onBookmarkLine}
                 />
               ))
             )}

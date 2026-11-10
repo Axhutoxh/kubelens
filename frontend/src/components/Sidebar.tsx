@@ -18,7 +18,17 @@ import {
   Package,
   Puzzle,
   Bot,
-  FileKey
+  FileKey,
+  LayoutGrid,
+  FileSearch,
+  BadgeCheck,
+  Gauge,
+  ShieldHalf,
+  Shield,
+  Scale,
+  UserCog,
+  KeyRound,
+  Users
 } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
 
@@ -29,6 +39,7 @@ export const NAV_SECTIONS = [
       { id: 'smart-lens-studio', label: '⚡ Smart Lens Studio', icon: Sparkles },
       { id: 'ai-chat', label: 'AI Chat', icon: Bot },
       { id: 'overview', label: 'Overview', icon: Activity },
+      { id: 'clusters', label: 'All Clusters', icon: LayoutGrid },
       { id: 'nodes', label: 'Nodes', icon: Cpu },
       { id: 'events', label: 'Events', icon: Radio },
       { id: 'namespaces', label: 'Namespaces', icon: FolderTree },
@@ -42,6 +53,9 @@ export const NAV_SECTIONS = [
       { id: 'statefulsets', label: 'StatefulSets', icon: Server },
       { id: 'daemonsets', label: 'DaemonSets', icon: Layers },
       { id: 'jobs', label: 'Jobs & CronJobs', icon: Activity },
+      { id: 'hpa', label: 'Autoscalers (HPA)', icon: Gauge },
+      { id: 'pdb', label: 'Disruption Budgets', icon: ShieldHalf },
+      { id: 'log-search', label: 'Log Search', icon: FileSearch },
     ],
   },
   {
@@ -50,6 +64,8 @@ export const NAV_SECTIONS = [
       { id: 'config-all', label: 'ConfigMaps & Secrets', icon: FileKey },
       { id: 'configmaps', label: 'ConfigMaps', icon: FileText },
       { id: 'secrets', label: 'Secrets', icon: ShieldCheck },
+      { id: 'certificates', label: 'TLS Certificates', icon: BadgeCheck },
+      { id: 'quotas', label: 'Quotas & Limits', icon: Scale },
     ],
   },
   {
@@ -57,7 +73,16 @@ export const NAV_SECTIONS = [
     items: [
       { id: 'services', label: 'Services', icon: Network },
       { id: 'ingresses', label: 'Ingresses', icon: Network },
+      { id: 'networkpolicies', label: 'Network Policies', icon: Shield },
       { id: 'storage', label: 'Storage Classes & PVs', icon: Database },
+    ],
+  },
+  {
+    title: 'Access Control',
+    items: [
+      { id: 'rbac', label: 'Who Can Do What', icon: Users },
+      { id: 'serviceaccounts', label: 'Service Accounts', icon: UserCog },
+      { id: 'roles', label: 'Roles & Bindings', icon: KeyRound },
     ],
   },
   {
@@ -236,7 +261,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Check for updates"
                 className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono hover:border-cyan-500/70 hover:text-cyan-300 transition-colors cursor-pointer"
               >
-                v1.6.0 Native
+                v1.7.0 Native
               </button>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">

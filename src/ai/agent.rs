@@ -1,14 +1,17 @@
 //! In-app assistant: HTTP endpoints and the tool-calling loop.
 //!
 //! `POST /api/ai/chat` streams Server-Sent Events. The loop asks the model, runs the read-only
-//! tools it requests, feeds results back, and repeats until the model answers. A tool call
-//! that wants unmasked data (`reveal: true`) pauses the loop with a `permission` event; the
-//! UI resends the conversation with the user's decision in `approvals` to continue.
+//! tools it requests, feeds results back, and repeats until the model answers. Two kinds of
+//! call pause the loop with a `permission` event: a read that wants unmasked data
+//! (`reveal: true`), and a proposed change (`actions`), which comes with a preview of exactly
+//! what would change. The UI resends the conversation with the user's decisions in
+//! `approvals` to continue; a change only runs when its approval is `true`.
 
+use super::actions;
 use super::keystore;
 use super::providers::{self, Conn, EndpointMode, ModelInfo, Msg, Provider, ToolCall, ToolResult};
 use super::settings::{self, AiSettings};
-use super::tools;
+use super::tools::{self, ToolSpec};
 use crate::AppState;
 use axum::{
     extract::{Query, State},
@@ -24,6 +27,16 @@ use std::convert::Infallible;
 
 /// Model round-trips per user message before giving up
 const MAX_STEPS: usize = 12;
+
+/// Read-only tools plus the change proposals (in-app chat only; MCP gets the read-only set)
+fn chat_tools() -> &'static [ToolSpec] {
+    static TOOLS: std::sync::OnceLock<Vec<ToolSpec>> = std::sync::OnceLock::new();
+    TOOLS.get_or_init(|| tools::specs().iter().chain(actions::specs()).cloned().collect())
+}
+
+fn summary(name: &str, args: &Value) -> String {
+    if actions::is_action(name) { actions::describe(name, args) } else { tools::describe_call(name, args) }
+}
 
 type ApiError = (StatusCode, String);
 
@@ -296,9 +309,13 @@ and troubleshoot their cluster and use Kubellens.\n\n\
 How to work:\n\
 - Use the tools to look at real cluster state before answering questions about it; don't guess. Start broad \
 (list_resources, get_events) and drill in (describe_resource, get_logs with previous=true for crash loops).\n\
-- Tools are read-only. You cannot change the cluster. When a change is needed, say exactly what to do: the \
-Kubellens action (e.g. Deployments → tag icon → Set image tag, Rolling Restart, Scale, ConfigMaps → Review & Save, \
-Rollout History → Roll back) and/or the equivalent kubectl command.\n\
+- Looking is read-only. To fix something you can propose one change with restart_workload, scale_workload, \
+rollback_deployment, delete_pod or set_image. Nothing runs until the user reviews a preview and clicks Apply, and \
+they may decline. Only propose a change when the user asks for a fix or clearly wants one; explain the cause and \
+why the change helps first, and propose the smallest change that fixes it, one at a time. If the user declines, \
+don't propose it again unless asked. For anything these can't do (ConfigMap edits, env vars, resources, Helm), \
+say exactly what to do: the Kubellens action (e.g. ConfigMaps → Review & Save, Helm → Roll back) and/or the \
+kubectl command.\n\
 - Sensitive values (passwords, tokens, keys, Secret data) are replaced with [REDACTED] before you see them. Work \
 with the masked output whenever possible. Only call a tool with reveal=true when the actual value is essential, and \
 explain why in your answer; the user is asked to allow each such call and may decline. Never repeat a revealed \
@@ -310,7 +327,10 @@ Services, Ingresses, ConfigMaps, Secrets, Storage, Nodes, Namespaces, Events, He
 Smart Lens Studio compares two clusters/namespaces side by side (Diff mode compares images, env and ConfigMaps); \
 pod shell, live and previous-container logs with level/regex filters and download; Ctrl+K command palette; Ctrl+F \
 find in ConfigMaps and YAML; bulk Set image tag with live rollout tracking and Undo all; release-drift badges on \
-Deployments; pod alerts (bell icon); saved Workspaces; port forwarding; rollout history and rollback."
+Deployments; pod and certificate-expiry alerts (bell icon); saved Workspaces; port forwarding; rollout history and \
+rollback; TLS Certificates (expiry of every TLS Secret and the Ingresses using it); Log Search across many pods; \
+Timeline per workload (rollouts, restarts, config changes, events); All Clusters health page; deployment health \
+score; HPA, PodDisruptionBudget, NetworkPolicy, quota, service account and role views; Who Can Do What (RBAC)."
     )
 }
 
@@ -350,7 +370,7 @@ pub async fn handle_chat(
         for _ in 0..MAX_STEPS {
             if pending.is_empty() {
                 yield event(json!({ "type": "status", "text": "Thinking…" }));
-                let turn = match providers::complete(provider, &conn, &model, &system, &msgs, tools::specs()).await {
+                let turn = match providers::complete(provider, &conn, &model, &system, &msgs, chat_tools()).await {
                     Ok(t) => t,
                     Err(e) => {
                         yield event(json!({ "type": "error", "message": e }));
@@ -372,17 +392,26 @@ pub async fn handle_chat(
                 pending = turn.tool_calls;
             }
 
-            // Calls that want unmasked data need a decision before anything in this turn runs
-            let undecided: Vec<Value> = pending
-                .iter()
-                .filter(|c| tools::wants_reveal(&c.name, &c.args) && !approvals.contains_key(&c.id))
-                .map(|c| json!({
-                    "id": c.id,
-                    "name": c.name,
-                    "args": c.args,
-                    "summary": tools::describe_call(&c.name, &c.args),
-                }))
-                .collect();
+            // Reveals and changes need a decision before anything in this turn runs. A change
+            // whose preview fails (not found, nothing to change) goes back to the model as an error.
+            let mut undecided: Vec<Value> = Vec::new();
+            let mut failed_previews: HashMap<String, String> = HashMap::new();
+            for c in &pending {
+                if approvals.contains_key(&c.id) {
+                    continue;
+                }
+                if tools::wants_reveal(&c.name, &c.args) {
+                    undecided.push(json!({ "kind": "reveal", "id": c.id, "name": c.name, "args": c.args, "summary": tools::describe_call(&c.name, &c.args) }));
+                } else if actions::is_action(&c.name) {
+                    yield event(json!({ "type": "status", "text": format!("Preparing: {}", actions::describe(&c.name, &c.args)) }));
+                    match actions::preview(&c.name, &c.args, &cluster).await {
+                        Ok(p) => undecided.push(json!({ "kind": "action", "id": c.id, "name": c.name, "args": c.args, "summary": actions::describe(&c.name, &c.args), "preview": p })),
+                        Err(e) => {
+                            failed_previews.insert(c.id.clone(), e);
+                        }
+                    }
+                }
+            }
             if !undecided.is_empty() {
                 yield event(json!({ "type": "permission", "requests": undecided }));
                 return;
@@ -390,6 +419,35 @@ pub async fn handle_chat(
 
             let mut results = Vec::new();
             for call in std::mem::take(&mut pending) {
+                if actions::is_action(&call.name) {
+                    let applied = approvals.get(&call.id).copied() == Some(true) && !failed_previews.contains_key(&call.id);
+                    yield event(json!({ "type": "tool_start", "id": call.id, "name": call.name, "summary": summary(&call.name, &call.args), "reveal": false, "action": true, "applied": applied }));
+                    let (content, is_error) = if let Some(e) = failed_previews.get(&call.id) {
+                        (format!("Error: {e}"), true)
+                    } else if applied {
+                        match actions::apply(&call.name, &call.args, &cluster).await {
+                            Ok(out) => {
+                                state.cache.invalidate_all().await;
+                                (format!("Applied: {}\n{out}\nTell the user what changed and how to check the result.", actions::describe(&call.name, &call.args)), false)
+                            }
+                            Err(e) => (format!("Error: applying the change failed: {e}"), true),
+                        }
+                    } else {
+                        ("The user chose not to apply this change. Nothing was changed; don't propose it again unless they ask.".to_string(), false)
+                    };
+                    yield event(json!({
+                        "type": "tool_end",
+                        "id": call.id,
+                        "ok": !is_error,
+                        "redacted": 0,
+                        "truncated": false,
+                        "chars": content.len(),
+                        "error": if is_error { Some(content.clone()) } else { None },
+                        "declined": !applied && !is_error,
+                    }));
+                    results.push(ToolResult { id: call.id, name: call.name, content, is_error });
+                    continue;
+                }
                 let wants = tools::wants_reveal(&call.name, &call.args);
                 let allowed = wants && approvals.get(&call.id).copied().unwrap_or(false);
                 let summary = tools::describe_call(&call.name, &call.args);

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Sparkles, X, Settings2, Trash2, Lock, Loader2, Maximize2 } from 'lucide-react';
+import { Sparkles, X, Settings2, Trash2, Lock, Loader2, Maximize2, Download } from 'lucide-react';
+import { saveTextFile } from '../api/client';
+import { chatToMarkdown, exportFileName } from './export';
 import { ChatContext, ProviderId } from './types';
 import { useAiChat } from './useAiChat';
 import { ChatThread } from './ChatThread';
@@ -66,6 +68,24 @@ export const AiPanel: React.FC<AiPanelProps> = ({ isOpen, onClose, context, init
         )}
         <div className="ml-auto flex items-center gap-1">
           {chat.messages.length > 0 && !showSettings && (
+            <button
+              onClick={async () => {
+                const title = titleFor(chat.messages);
+                try {
+                  const path = await saveTextFile(exportFileName(title), chatToMarkdown(chat.messages, { title, cluster: context.cluster, namespace: context.namespace, model: chat.current?.model }));
+                  onToast?.(path ? `Saved conversation to ${path}` : 'Downloading conversation');
+                } catch (e: any) {
+                  onToast?.(`Export failed: ${e.message}`, 'error');
+                }
+              }}
+              disabled={chat.busy}
+              title="Save as Markdown (questions and answers, no cluster data)"
+              className="p-1.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {chat.messages.length > 0 && !showSettings && (
             <button onClick={() => chat.reset()} title="New conversation" className="p-1.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800"><Trash2 className="w-3.5 h-3.5" /></button>
           )}
           {onOpenFull && (
@@ -92,7 +112,7 @@ export const AiPanel: React.FC<AiPanelProps> = ({ isOpen, onClose, context, init
           <div className="px-3 py-1.5 border-b border-slate-800/80 text-[10.5px] text-slate-500 flex items-center gap-1.5 shrink-0 select-none">
             <Lock className="w-3 h-3 text-emerald-500" />
             <span className="truncate">
-              Read-only · <span className="text-slate-300 font-mono">{context.cluster || 'current cluster'}</span> · <span className="text-slate-300 font-mono">{ns}</span>
+              Changes only on Apply · <span className="text-slate-300 font-mono">{context.cluster || 'current cluster'}</span> · <span className="text-slate-300 font-mono">{ns}</span>
             </span>
           </div>
           <ChatThread chat={chat} suggestions={SUGGESTIONS} scopeLabel={`${ns} on ${context.cluster || 'this cluster'}`} autoFocus />

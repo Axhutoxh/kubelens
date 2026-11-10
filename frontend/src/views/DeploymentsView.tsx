@@ -12,19 +12,23 @@ import {
   Rows3,
   Copy,
   X,
-  AlertTriangle
+  AlertTriangle,
+  GitCommitVertical,
+  HeartPulse
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
 import { PodMetric } from '../api/client';
 import { RolloutHistoryModal } from '../components/RolloutHistoryModal';
 import { SetImageTagModal } from '../components/SetImageTagModal';
 import { ColumnDef, ColumnPicker, useColumnVisibility } from '../components/ColumnPicker';
+import { HealthScore, deploymentHealth } from '../utils/health';
 
 const DEPLOYMENT_COLUMNS: ColumnDef[] = [
   { id: 'name', label: 'Name', locked: true },
   { id: 'namespace', label: 'Namespace' },
   { id: 'image', label: 'Image Tag' },
   { id: 'status', label: 'Status' },
+  { id: 'health', label: 'Health' },
   { id: 'ready', label: 'Ready' },
   { id: 'cpu', label: 'CPU' },
   { id: 'memory', label: 'Memory' },
@@ -32,7 +36,13 @@ const DEPLOYMENT_COLUMNS: ColumnDef[] = [
   { id: 'available', label: 'Available' },
   { id: 'actions', label: 'Actions', locked: true },
 ];
-const DEPLOYMENT_DEFAULT_COLUMNS = ['name', 'image', 'status', 'ready', 'cpu', 'memory', 'actions'];
+const DEPLOYMENT_DEFAULT_COLUMNS = ['name', 'image', 'status', 'health', 'ready', 'cpu', 'memory', 'actions'];
+
+const GRADE_CLASSES: Record<HealthScore['grade'], string> = {
+  good: 'bg-emerald-950 text-emerald-400 border-emerald-800/80',
+  fair: 'bg-amber-950 text-amber-300 border-amber-800/80',
+  poor: 'bg-rose-950 text-rose-300 border-rose-800/80',
+};
 
 // Kubernetes builds pod-template hashes and pod suffixes from this alphabet (no vowels),
 // which lets us attribute "<deployment>-<hash>-<suffix>" pods without false matches.
@@ -101,6 +111,8 @@ interface DeploymentsViewProps {
   onDelete: (kind: string, name: string, namespace: string) => void;
   /** Combined logs from every pod of the deployment (via its label selector) */
   onOpenAllLogs?: (dep: DeploymentItem) => void;
+  /** Rollouts, restarts, config changes and events of one deployment */
+  onOpenTimeline?: (dep: DeploymentItem) => void;
   onRefresh?: () => void;
   onToast?: (message: string, type?: 'success' | 'error') => void;
   /** Pod usage keyed by `${namespace}/${name}`; summed per deployment */
@@ -146,6 +158,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   onOpenManifest,
   onDelete,
   onOpenAllLogs,
+  onOpenTimeline,
   onRefresh,
   onToast,
   podMetrics,
@@ -210,9 +223,14 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
     const keys = new Set(filteredDeployments.filter((d) => { const t = tagOf(d); return t && t !== dominant; }).map((d) => `${d.metadata.namespace}/${d.metadata.name}`));
     return { dominant, count, keys };
   }, [filteredDeployments]);
-  const shownDeployments = onlyDrift && drift.keys.size > 0
-    ? filteredDeployments.filter((d) => drift.keys.has(`${d.metadata.namespace}/${d.metadata.name}`))
-    : filteredDeployments;
+  // Best-practice score per deployment (limits, probes, pinned tags, replicas, root)
+  const health = useMemo(() => new Map(filteredDeployments.map((d) => [`${d.metadata.namespace}/${d.metadata.name}`, deploymentHealth(d)])), [filteredDeployments]);
+  const unhealthyCount = [...health.values()].filter((h) => h.grade !== 'good').length;
+  const [onlyUnhealthy, setOnlyUnhealthy] = useState(false);
+
+  const shownDeployments = filteredDeployments
+    .filter((d) => !(onlyDrift && drift.keys.size > 0) || drift.keys.has(`${d.metadata.namespace}/${d.metadata.name}`))
+    .filter((d) => !onlyUnhealthy || health.get(`${d.metadata.namespace}/${d.metadata.name}`)?.grade !== 'good');
 
   // Multi-select (same behaviour as the Pods view): keys survive refreshes, vanished items are ignored
   const depKey = (d: DeploymentItem) => `${d.metadata.namespace}/${d.metadata.name}`;
@@ -300,7 +318,19 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
               Select them
             </button>
           )}
-          {selected.size === 0 && drift.keys.size === 0 && (
+          {unhealthyCount > 0 && (
+            <button
+              onClick={() => setOnlyUnhealthy((o) => !o)}
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-semibold transition-colors ${
+                onlyUnhealthy ? 'bg-rose-500/20 text-rose-200 border-rose-500/70' : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+              }`}
+              title={`${unhealthyCount} deployments miss best practices (limits, probes, pinned tags, replicas); click to ${onlyUnhealthy ? 'show all' : 'show only those'}`}
+            >
+              <HeartPulse className="w-3.5 h-3.5 text-rose-400" />
+              {unhealthyCount} below health target
+            </button>
+          )}
+          {selected.size === 0 && drift.keys.size === 0 && unhealthyCount === 0 && (
             <span className="text-[11px] text-slate-500 hidden lg:inline">Tip: tick deployments (Shift-click for a range) to set one image tag on all of them</span>
           )}
           <ColumnPicker
@@ -363,6 +393,7 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
               {cols.show('namespace') && <th className="py-2.5 px-4 font-semibold">Namespace</th>}
               {cols.show('image') && <th className="py-2.5 px-4 font-semibold">Image Tag</th>}
               {cols.show('status') && <th className="py-2.5 px-4 font-semibold">Status</th>}
+              {cols.show('health') && <th className="py-2.5 px-4 font-semibold" title="Best-practice score: limits, requests, probes, pinned image tags, replicas, root">Health</th>}
               {cols.show('ready') && <th className="py-2.5 px-4 font-semibold" title="Ready / desired pods">Ready</th>}
               {cols.show('cpu') && (
                 <th className="py-2.5 px-4 font-semibold" title={metricsAvailable === false ? 'Live usage needs metrics-server in the cluster' : 'Total CPU of all pods'}>CPU</th>
@@ -465,6 +496,20 @@ Differs from ${drift.count} deployments on ${drift.dominant}` : fullName}
                         </span>
                       </td>
                     )}
+                    {cols.show('health') && (() => {
+                      const h = health.get(depKey(dep));
+                      if (!h) return <td className="py-2.5 px-4" />;
+                      return (
+                        <td className="py-2.5 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border whitespace-nowrap cursor-help ${GRADE_CLASSES[h.grade]}`}
+                            title={h.issues.length ? h.issues.map((i) => `−${i.weight}  ${i.text}`).join('\n') : 'Follows the checked best practices'}
+                          >
+                            {h.score}
+                          </span>
+                        </td>
+                      );
+                    })()}
                     {cols.show('ready') && (
                       <td className="py-2.5 px-4">
                         <span className={`px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap ${
@@ -520,6 +565,16 @@ Differs from ${drift.count} deployments on ${drift.dominant}` : fullName}
                         >
                           <History className="w-3.5 h-3.5" />
                         </button>
+                        {/* Timeline: rollouts, restarts, config changes, events */}
+                        {onOpenTimeline && (
+                          <button
+                            onClick={() => onOpenTimeline(dep)}
+                            title="Timeline: what changed and when"
+                            className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
+                          >
+                            <GitCommitVertical className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {/* Combined logs of all pods */}
                         {onOpenAllLogs && (
                           <button

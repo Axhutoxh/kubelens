@@ -9,7 +9,10 @@ import { CommandPalette } from './components/CommandPalette';
 import { AlertsBell } from './components/AlertsBell';
 import { UpdateNotice } from './components/UpdateNotice';
 import { Workspace, WorkspacesMenu, loadWorkspaces, storeWorkspaces } from './components/WorkspacesMenu';
-import { usePodAlerts } from './hooks/usePodAlerts';
+import { usePodAlerts, PodAlert } from './hooks/usePodAlerts';
+import { useCertAlerts } from './hooks/useCertAlerts';
+import type { TimelineTarget } from './components/TimelineModal';
+import type { PolicyViewId } from './views/PolicyViews';
 import { Sparkles } from 'lucide-react';
 
 // Views and the (large) pod detail modal are split into their own chunks and only
@@ -33,11 +36,19 @@ const HelmView = lazy(() => import('./views/HelmView').then((m) => ({ default: m
 const CustomResourcesView = lazy(() => import('./views/CustomResourcesView').then((m) => ({ default: m.CustomResourcesView })));
 const AiPanel = lazy(() => import('./ai/AiPanel').then((m) => ({ default: m.AiPanel })));
 const AiChatView = lazy(() => import('./ai/AiChatView').then((m) => ({ default: m.AiChatView })));
+const CertificatesView = lazy(() => import('./views/CertificatesView').then((m) => ({ default: m.CertificatesView })));
+const LogSearchView = lazy(() => import('./views/LogSearchView').then((m) => ({ default: m.LogSearchView })));
+const ClustersView = lazy(() => import('./views/ClustersView').then((m) => ({ default: m.ClustersView })));
+const RbacView = lazy(() => import('./views/RbacView').then((m) => ({ default: m.RbacView })));
+const PolicyView = lazy(() => import('./views/PolicyViews').then((m) => ({ default: m.PolicyView })));
+const TimelineModal = lazy(() => import('./components/TimelineModal').then((m) => ({ default: m.TimelineModal })));
 
-// Views that fetch their own data (and show their own loading state)
-const SELF_LOADING_VIEWS = new Set(['smart-lens-studio', 'ai-chat', 'helm', 'crds']);
-// Views that don't use the shared resource polling at all
-const NO_POLL_VIEWS = new Set(['smart-lens-studio', 'ai-chat']);
+// Self-loading list views for autoscalers, budgets, network policies, quotas, service accounts, roles
+const POLICY_VIEWS = new Set<string>(['hpa', 'pdb', 'networkpolicies', 'quotas', 'serviceaccounts', 'roles']);
+// Views that fetch their own data and show their own loading state, so they skip the shared polling
+const OWN_DATA_VIEWS = ['smart-lens-studio', 'ai-chat', 'certificates', 'log-search', 'clusters', 'rbac', ...POLICY_VIEWS];
+const SELF_LOADING_VIEWS = new Set(['helm', 'crds', ...OWN_DATA_VIEWS]);
+const NO_POLL_VIEWS = new Set(OWN_DATA_VIEWS);
 
 const PALETTE_VIEWS = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ id: i.id, label: i.label.replace(/^⚡\s*/, '') })));
 const viewLabel = (id: string) => PALETTE_VIEWS.find((v) => v.id === id)?.label || id;
@@ -60,6 +71,16 @@ const VIEW_LABELS: Record<string, string> = {
   events: 'events',
   helm: 'Helm releases',
   crds: 'custom resources',
+  certificates: 'TLS certificates',
+  'log-search': 'log search',
+  clusters: 'all clusters',
+  rbac: 'permissions',
+  hpa: 'autoscalers',
+  pdb: 'disruption budgets',
+  networkpolicies: 'network policies',
+  quotas: 'quotas and limits',
+  serviceaccounts: 'service accounts',
+  roles: 'roles and bindings',
 };
 
 const POLL_INTERVAL_MS = 10000;
@@ -70,6 +91,7 @@ import {
   switchContext, 
   fetchClusterOverview, 
   fetchK8sResource,
+  fetchResourceDetail,
   getResourceManifest,
   applyManifest,
   deleteResource,
@@ -186,7 +208,18 @@ export const App: React.FC = () => {
     showToast(`${a.reason}: ${a.namespace}/${a.pod}${a.container ? ` (${a.container})` : ''}`, 'error')
   );
 
-  const openAlert = (a: { namespace: string; pod: string }) => {
+  // TLS certificate expiry (30 / 7 / 1 days, expired) shares the bell and its on/off switch
+  const certAlerts = useCertAlerts(selectedNamespace, currentContext, podAlerts.settings.enabled, (a) =>
+    showToast(`${a.reason}: ${a.namespace}/${a.pod}`, 'error')
+  );
+  const allAlerts = [...certAlerts.alerts, ...podAlerts.alerts].sort((a, b) => b.at - a.at);
+
+  const openAlert = (a: PodAlert) => {
+    if (a.kind === 'cert') {
+      setCurrentView('certificates');
+      setSearchQuery(a.pod);
+      return;
+    }
     const pod = podAlerts.pods.find((p) => p.metadata.name === a.pod && (p.metadata.namespace || 'default') === a.namespace);
     if (pod) {
       setSelectedPod(pod);
@@ -198,6 +231,9 @@ export const App: React.FC = () => {
       setSearchQuery(a.pod);
     }
   };
+
+  // Timeline modal (rollouts, restarts, config changes, events of one workload)
+  const [timelineTarget, setTimelineTarget] = useState<TimelineTarget | null>(null);
 
   // Bumped by "Check for updates" (palette, sidebar version badge)
   const [updateCheck, setUpdateCheck] = useState(0);
@@ -218,13 +254,20 @@ export const App: React.FC = () => {
     setWorkspaces(next);
     storeWorkspaces(next);
   };
+  // Workspace last opened or saved; it stays active while its cluster and namespace are selected.
+  // Saved log filters and bookmarks belong to it.
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId && w.context === currentContext && w.namespace === selectedNamespace) || null;
   const saveWorkspace = (name: string) => {
-    const ws: Workspace = { id: `ws-${Date.now()}`, name, context: currentContext, namespace: selectedNamespace, view: currentView, search: searchQuery };
-    // Same name overwrites, so "save again" updates a workspace
+    // Same name overwrites, so "save again" updates a workspace (and keeps its id)
+    const existing = workspaces.find((w) => w.name === name);
+    const ws: Workspace = { id: existing?.id || `ws-${Date.now()}`, name, context: currentContext, namespace: selectedNamespace, view: currentView, search: searchQuery };
     updateWorkspaces([...workspaces.filter((w) => w.name !== name), ws]);
+    setActiveWorkspaceId(ws.id);
     showToast(`Saved workspace "${name}"`);
   };
   const applyWorkspace = async (ws: Workspace) => {
+    setActiveWorkspaceId(ws.id);
     if (ws.context && ws.context !== currentContext) await handleSwitchContext(ws.context);
     setSelectedNamespace(ws.namespace);
     setCurrentView(ws.view);
@@ -658,20 +701,25 @@ export const App: React.FC = () => {
                 onDelete={(id) => updateWorkspaces(workspaces.filter((w) => w.id !== id))}
               />
               <AlertsBell
-                alerts={podAlerts.alerts}
+                alerts={allAlerts}
                 enabled={podAlerts.settings.enabled}
                 desktop={podAlerts.settings.desktop}
                 onToggleEnabled={() => podAlerts.updateSettings({ enabled: !podAlerts.settings.enabled })}
                 onEnableDesktop={podAlerts.enableDesktop}
                 onDisableDesktop={() => podAlerts.updateSettings({ desktop: false })}
-                onMarkAllRead={podAlerts.markAllRead}
-                onClear={podAlerts.clear}
+                onMarkAllRead={() => { podAlerts.markAllRead(); certAlerts.markAllRead(); }}
+                onClear={() => { podAlerts.clear(); certAlerts.clear(); }}
                 onOpenAlert={openAlert}
                 onAskAi={(a) =>
-                  askAi(
-                    `Pod ${a.namespace}/${a.pod}${a.container ? ` (container ${a.container})` : ''} reported ${a.reason}. Find the cause and tell me how to fix it.`,
-                    `pod ${a.namespace}/${a.pod}`
-                  )
+                  a.kind === 'cert'
+                    ? askAi(
+                        `TLS Secret ${a.namespace}/${a.pod}: ${a.reason}${a.message ? ` (${a.message})` : ''}. Which ingresses use it, and how should I renew or fix it?`,
+                        `secret ${a.namespace}/${a.pod}`
+                      )
+                    : askAi(
+                        `Pod ${a.namespace}/${a.pod}${a.container ? ` (container ${a.container})` : ''} reported ${a.reason}. Find the cause and tell me how to fix it.`,
+                        `pod ${a.namespace}/${a.pod}`
+                      )
                 }
               />
             </>
@@ -716,6 +764,7 @@ export const App: React.FC = () => {
               onOpenShell={(pod, ns, containers) => handleOpenShell(pod, ns, containers)}
               onOpenMultiLogs={(targets) => handleOpenMultiLogs({ targets, title: `Logs (${targets.length} pods)` })}
               onBulkDelete={handleBulkDeletePods}
+              onOpenTimeline={(pod) => setTimelineTarget({ kind: 'pod', name: pod.metadata.name, namespace: pod.metadata.namespace || 'default' })}
               podMetrics={podMetrics}
               metricsAvailable={metricsAvailable}
               onOpenManifest={handleOpenManifest}
@@ -746,6 +795,7 @@ export const App: React.FC = () => {
                 }
                 handleOpenMultiLogs({ selector, namespace: dep.metadata.namespace || 'default', title: `Logs (${dep.metadata.name}, all pods)` });
               }}
+              onOpenTimeline={(dep) => setTimelineTarget({ kind: 'deployment', name: dep.metadata.name, namespace: dep.metadata.namespace || 'default' })}
               onRefresh={() => loadResources()}
               podMetrics={podMetrics}
               metricsAvailable={metricsAvailable}
@@ -761,6 +811,7 @@ export const App: React.FC = () => {
               onRestart={handleRestartResource}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+              onOpenTimeline={(name, namespace) => setTimelineTarget({ kind: 'statefulset', name, namespace })}
             />
           )}
 
@@ -771,6 +822,7 @@ export const App: React.FC = () => {
               onRestart={handleRestartResource}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
+              onOpenTimeline={(name, namespace) => setTimelineTarget({ kind: 'daemonset', name, namespace })}
             />
           )}
 
@@ -904,6 +956,69 @@ export const App: React.FC = () => {
             />
           )}
 
+          {currentView === 'certificates' && (
+            <CertificatesView
+              namespace={selectedNamespace}
+              currentContext={currentContext}
+              searchQuery={searchQuery}
+              refreshTick={refreshTick}
+              onOpenManifest={handleOpenManifest}
+              onAskAi={askAi}
+            />
+          )}
+
+          {currentView === 'log-search' && (
+            <LogSearchView
+              currentContext={currentContext}
+              namespace={selectedNamespace}
+              namespaces={namespaces}
+              onOpenLogs={(pod, ns, containers) => handleOpenLogs(pod, ns, containers)}
+              onToast={showToast}
+            />
+          )}
+
+          {currentView === 'clusters' && (
+            <ClustersView
+              currentContext={currentContext}
+              refreshTick={refreshTick}
+              onOpenCluster={async (ctx) => {
+                await handleSwitchContext(ctx);
+                setCurrentView('overview');
+              }}
+              onOpenPod={async (ctx, ns, name) => {
+                try {
+                  const pod = await fetchResourceDetail<PodItem>('pod', name, ns, ctx);
+                  setSelectedPod(pod);
+                  setSelectedPodContext(ctx === currentContext ? undefined : ctx);
+                  setSelectedPodTab('overview');
+                } catch (e: any) {
+                  showToast(e.message, 'error');
+                }
+              }}
+            />
+          )}
+
+          {currentView === 'rbac' && (
+            <RbacView
+              currentContext={currentContext}
+              namespace={selectedNamespace}
+              namespaces={namespaces}
+              refreshTick={refreshTick}
+            />
+          )}
+
+          {POLICY_VIEWS.has(currentView) && (
+            <PolicyView
+              view={currentView as PolicyViewId}
+              namespace={selectedNamespace}
+              currentContext={currentContext}
+              searchQuery={searchQuery}
+              refreshTick={refreshTick}
+              onOpenManifest={handleOpenManifest}
+              onDelete={handleDeleteResource}
+            />
+          )}
+
           {currentView === 'ai-chat' && (
             <AiChatView
               contexts={contexts}
@@ -946,6 +1061,8 @@ export const App: React.FC = () => {
           onCloseTask={handleCloseDockTask}
           onUpdateTask={handleUpdateDockTask}
           onToast={showToast}
+          workspace={activeWorkspace ? { id: activeWorkspace.id, name: activeWorkspace.name } : null}
+          onOpenLogs={handleOpenLogs}
         />
 
         {/* Bottom Status Bar */}
@@ -1055,6 +1172,12 @@ export const App: React.FC = () => {
         onSuccess={() => loadResources()}
         target={scaleTarget}
       />
+
+      {timelineTarget && (
+        <Suspense fallback={null}>
+          <TimelineModal target={timelineTarget} onClose={() => setTimelineTarget(null)} onAskAi={askAi} />
+        </Suspense>
+      )}
 
       {/* Pod Detail & Port Forward Modal */}
       {selectedPod && (

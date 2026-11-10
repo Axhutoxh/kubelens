@@ -12,7 +12,8 @@ import {
   SquareTerminal,
   Rows3,
   Copy,
-  X
+  X,
+  GitCommitVertical
 } from 'lucide-react';
 import { PodItem, PortForwardSession } from '../types/k8s';
 import { PodMetric } from '../api/client';
@@ -48,6 +49,8 @@ interface PodsViewProps {
   onBulkDelete?: (pods: Array<{ name: string; namespace: string }>) => void;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+  /** Restarts, events and config changes of one pod */
+  onOpenTimeline?: (pod: PodItem) => void;
   onToast?: (message: string, type?: 'success' | 'error') => void;
 }
 
@@ -66,6 +69,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
   onBulkDelete,
   onOpenManifest,
   onDelete,
+  onOpenTimeline,
   onToast,
 }) => {
   const filteredPods = pods.filter((p) => {
@@ -397,6 +401,16 @@ export const PodsView: React.FC<PodsViewProps> = ({
                             className="p-1 text-slate-400 hover:text-emerald-300 hover:bg-slate-800 rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
                           >
                             <SquareTerminal className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {/* Timeline */}
+                        {onOpenTimeline && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onOpenTimeline(pod); }}
+                            title="Timeline: restarts, events and config changes"
+                            className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
+                          >
+                            <GitCommitVertical className="w-3.5 h-3.5" />
                           </button>
                         )}
                         {/* Manifest */}

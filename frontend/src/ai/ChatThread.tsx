@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Send, Square, Loader2, CheckCircle2, AlertCircle, Wrench, ShieldAlert, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { Send, Square, Loader2, CheckCircle2, AlertCircle, Wrench, ShieldAlert, Eye, EyeOff, Sparkles, Hammer, Ban } from 'lucide-react';
+import { PermissionRequest } from './types';
 import { AiChat } from './useAiChat';
 import { Markdown } from './Markdown';
 
@@ -36,6 +37,17 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
 
   const column = roomy ? 'max-w-3xl mx-auto w-full' : '';
   const providerName = current?.label || 'the AI provider';
+  const reveals = (permission || []).filter((r) => r.kind !== 'action');
+  const actions = (permission || []).filter((r) => r.kind === 'action');
+
+  const choice = (r: PermissionRequest, value: boolean, label: string, on: string) => (
+    <button
+      onClick={() => setDecisions((d) => ({ ...d, [r.id]: value }))}
+      className={`px-2 py-0.5 rounded border shrink-0 ${decisions[r.id] === value ? on : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -50,11 +62,11 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
                   </div>
                   <div className="text-base font-semibold text-slate-100">Ask about {scopeLabel}</div>
                   <div className="text-xs text-slate-400 max-w-md">
-                    The assistant checks the live cluster with read-only tools. Passwords, tokens and Secret data stay masked unless you allow them.
+                    The assistant checks the live cluster with read-only tools and can propose fixes you approve one by one. Passwords, tokens and Secret data stay masked unless you allow them.
                   </div>
                 </div>
               )}
-              {!roomy && <div className="text-xs text-slate-400">Ask about {scopeLabel}. The assistant uses read-only tools; secrets stay masked unless you allow them.</div>}
+              {!roomy && <div className="text-xs text-slate-400">Ask about {scopeLabel}. The assistant reads the cluster and only changes it when you click Apply; secrets stay masked unless you allow them.</div>}
               <div className={roomy ? 'grid grid-cols-1 sm:grid-cols-2 gap-2' : 'space-y-2'}>
                 {suggestions.map((s) => (
                   <button
@@ -83,8 +95,14 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
                     <div key={c.id} className="flex items-center gap-1.5 text-[11px] text-slate-500 font-mono">
                       {!a || a.state === 'running'
                         ? (a ? <Loader2 className="w-3 h-3 animate-spin text-cyan-400" /> : <Wrench className="w-3 h-3" />)
-                        : a.state === 'ok' ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <AlertCircle className="w-3 h-3 text-rose-400" />}
-                      <span className="truncate" title={a?.error || JSON.stringify(c.args)}>{a?.summary || c.name}</span>
+                        : a.state === 'error' ? <AlertCircle className="w-3 h-3 text-rose-400" />
+                        : a.declined ? <Ban className="w-3 h-3 text-slate-500" />
+                        : a.action ? <Hammer className="w-3 h-3 text-emerald-400" />
+                        : <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
+                      <span className="truncate" title={a?.error || JSON.stringify(c.args)}>{a?.summary || permission?.find((r) => r.id === c.id)?.summary || c.name.replace(/_/g, ' ')}</span>
+                      {a?.action && a.state === 'ok' && (a.declined
+                        ? <span className="text-slate-500 font-sans">· not applied</span>
+                        : <span className="text-emerald-400 font-sans font-semibold">· applied</span>)}
                       {a?.reveal && <span className="flex items-center gap-0.5 text-amber-400 font-sans"><Eye className="w-3 h-3" /> revealed</span>}
                       {!!a?.redacted && <span className="flex items-center gap-0.5 text-emerald-400/90 font-sans" title="Sensitive values were masked before sending"><EyeOff className="w-3 h-3" /> {a.redacted} masked</span>}
                       {a?.truncated && <span className="text-slate-600 font-sans">· trimmed</span>}
@@ -95,7 +113,62 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
             ) : null
           )}
 
-          {permission && (
+          {actions.length > 0 && (
+            <div className="rounded-lg border border-cyan-700/70 bg-cyan-950/20 p-3 space-y-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-200">
+                <Hammer className="w-4 h-4" /> The assistant proposes {actions.length === 1 ? 'a change' : `${actions.length} changes`}
+              </div>
+              <div className="text-[11px] text-cyan-100/70">Nothing has changed yet. Review exactly what Apply does; it runs with your kubeconfig credentials.</div>
+              {actions.map((r) => {
+                const p = r.preview;
+                return (
+                  <div key={r.id} className={`rounded-md border p-2.5 space-y-1.5 ${p?.danger ? 'border-rose-700/70 bg-rose-950/20' : 'border-slate-700 bg-slate-950/60'}`}>
+                    <div className="flex items-center gap-2 text-[12px]">
+                      <span className="font-semibold text-slate-100 flex-1 min-w-0 truncate" title={r.summary}>{p?.title || r.summary}</span>
+                      {choice(r, true, 'Apply', p?.danger ? 'bg-rose-600 text-white border-rose-500 font-semibold' : 'bg-cyan-600 text-white border-cyan-500 font-semibold')}
+                      {choice(r, false, "Don't apply", 'bg-slate-600 text-white border-slate-500 font-semibold')}
+                    </div>
+                    {p && (
+                      <>
+                        <div className="text-[10.5px] text-slate-400">Cluster <span className="font-mono text-slate-200">{p.cluster}</span></div>
+                        {p.changes.length > 0 && (
+                          <table className="w-full text-[11px] font-mono">
+                            <tbody>
+                              {p.changes.map((c, i) => (
+                                <tr key={i} className="align-top">
+                                  <td className="pr-3 py-0.5 text-slate-400 whitespace-nowrap font-sans">{c.label}</td>
+                                  <td className="py-0.5 break-all">
+                                    <span className="text-rose-300 line-through decoration-rose-500/60">{c.from}</span>
+                                    <span className="text-slate-500"> → </span>
+                                    <span className="text-emerald-300">{c.to}</span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                        {p.note && <div className={`text-[11px] ${p.danger ? 'text-rose-300' : 'text-slate-300'}`}>{p.note}</div>}
+                        <div className="text-[10.5px] font-mono text-slate-500 break-all select-all" title="Command that Apply runs">$ {p.command}</div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              {reveals.length === 0 && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={chat.decide}
+                    disabled={actions.some((r) => decisions[r.id] === undefined)}
+                    className="px-3 py-1 rounded-md bg-slate-200 hover:bg-white text-slate-900 text-[11px] font-semibold disabled:opacity-40"
+                  >
+                    Continue
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {reveals.length > 0 && (
             <div className="rounded-lg border border-amber-700/70 bg-amber-950/30 p-3 space-y-2">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-200">
                 <ShieldAlert className="w-4 h-4" /> The assistant wants to see sensitive values
@@ -103,7 +176,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
               <div className="text-[11px] text-amber-100/80">
                 Passwords, tokens and Secret data are masked by default. Allowing a request sends the real values to {providerName} for that one lookup.
               </div>
-              {permission.map((r) => (
+              {reveals.map((r) => (
                 <div key={r.id} className="flex items-center gap-2 text-[11px]">
                   <span className="flex-1 min-w-0 truncate font-mono text-slate-200" title={JSON.stringify(r.args)}>{r.summary}</span>
                   <button
@@ -123,7 +196,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
               <div className="flex justify-end">
                 <button
                   onClick={chat.decide}
-                  disabled={permission.some((r) => decisions[r.id] === undefined)}
+                  disabled={(permission || []).some((r) => decisions[r.id] === undefined)}
                   className="px-3 py-1 rounded-md bg-slate-200 hover:bg-white text-slate-900 text-[11px] font-semibold disabled:opacity-40"
                 >
                   Continue
@@ -158,7 +231,7 @@ export const ChatThread: React.FC<ChatThreadProps> = ({ chat, suggestions, scope
               }}
               disabled={!!permission}
               rows={Math.min(6, Math.max(roomy ? 2 : 1, input.split('\n').length))}
-              placeholder={permission ? 'Answer the permission request above first' : `Ask about ${scopeLabel}… (Enter to send, Shift+Enter for a new line)`}
+              placeholder={permission ? 'Answer the request above first' : `Ask about ${scopeLabel}… (Enter to send, Shift+Enter for a new line)`}
               className="flex-1 bg-transparent resize-none text-[12.5px] text-slate-100 placeholder-slate-600 focus:outline-none py-0.5 disabled:opacity-50"
             />
             {busy ? (

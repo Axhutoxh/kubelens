@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 /// Upper bound on characters returned to the model per tool call
 const MAX_OUTPUT_CHARS: usize = 15_000;
 
+#[derive(Clone)]
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
@@ -26,12 +27,12 @@ pub struct ToolOutput {
     pub truncated: bool,
 }
 
-fn prop(kind: &str, description: &str) -> Value {
+pub(super) fn prop(kind: &str, description: &str) -> Value {
     json!({ "type": kind, "description": description })
 }
 
 const REVEAL_DESC: &str = "Set true ONLY if masked values are essential to answer. The user is asked for permission first; default false.";
-const CONTEXT_DESC: &str = "kubeconfig context (cluster). Defaults to the one the user is working in.";
+pub(super) const CONTEXT_DESC: &str = "kubeconfig context (cluster). Defaults to the one the user is working in.";
 
 pub fn specs() -> &'static [ToolSpec] {
     static SPECS: OnceLock<Vec<ToolSpec>> = OnceLock::new();
@@ -188,7 +189,7 @@ fn re(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap()
 }
 
-fn name_re() -> &'static Regex {
+pub(super) fn name_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| re(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,252})$"))
 }
@@ -203,7 +204,7 @@ fn since_re() -> &'static Regex {
     R.get_or_init(|| re(r"^[0-9]{1,5}[smh]$"))
 }
 
-fn arg<'a>(args: &'a Value, key: &str, required: bool, check: &Regex) -> Result<Option<&'a str>, String> {
+pub(super) fn arg<'a>(args: &'a Value, key: &str, required: bool, check: &Regex) -> Result<Option<&'a str>, String> {
     match args.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) if check.is_match(v) => Ok(Some(v)),
         Some(v) => Err(format!("invalid {key}: {v:?}")),
@@ -212,7 +213,7 @@ fn arg<'a>(args: &'a Value, key: &str, required: bool, check: &Regex) -> Result<
     }
 }
 
-fn context_arg<'a>(args: &'a Value, default_ctx: &'a str) -> Result<&'a str, String> {
+pub(super) fn context_arg<'a>(args: &'a Value, default_ctx: &'a str) -> Result<&'a str, String> {
     match args.get("context").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
         Some(c) if c.starts_with('-') || c.len() > 300 || c.chars().any(char::is_control) => Err(format!("invalid context: {c:?}")),
         Some(c) => Ok(c),
@@ -320,7 +321,7 @@ pub async fn execute(name: &str, args: &Value, default_ctx: &str, reveal: bool) 
     finish(raw, 0, tail_keep, reveal)
 }
 
-async fn kubectl(cmd: &[String], ctx: &str) -> Result<String, String> {
+pub(super) async fn kubectl(cmd: &[String], ctx: &str) -> Result<String, String> {
     let refs: Vec<&str> = cmd.iter().map(String::as_str).collect();
     run_kubectl_cmd(&refs, ctx).await.map_err(|e| e.trim().to_string())
 }
