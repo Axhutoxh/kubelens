@@ -9,6 +9,10 @@ export interface ToolActivity {
   truncated?: boolean;
   reveal?: boolean;
   error?: string | null;
+  /** A change proposal: applied after approval, or declined */
+  action?: boolean;
+  applied?: boolean;
+  declined?: boolean;
 }
 
 /**
@@ -70,10 +74,10 @@ export function useAiChat(context: ChatContext) {
         case 'messages': setMessages((m) => [...m, ...e.messages]); break;
         case 'tool_start':
           setStatusText(e.summary);
-          setActivity((a) => ({ ...a, [e.id]: { summary: e.summary, state: 'running', reveal: e.reveal } }));
+          setActivity((a) => ({ ...a, [e.id]: { summary: e.summary, state: 'running', reveal: e.reveal, action: e.action, applied: e.applied } }));
           break;
         case 'tool_end':
-          setActivity((a) => ({ ...a, [e.id]: { ...a[e.id], state: e.ok ? 'ok' : 'error', redacted: e.redacted, truncated: e.truncated, error: e.error } }));
+          setActivity((a) => ({ ...a, [e.id]: { ...a[e.id], state: e.ok ? 'ok' : 'error', redacted: e.redacted, truncated: e.truncated, error: e.error, declined: e.declined } }));
           break;
         case 'permission':
           setPermission(e.requests);

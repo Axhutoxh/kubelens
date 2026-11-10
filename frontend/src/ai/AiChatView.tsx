@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Sparkles, Plus, MessageSquare, Trash2, Settings2, Globe, FolderTree, Loader2, ShieldCheck, ArrowLeft } from 'lucide-react';
+import { Sparkles, Plus, MessageSquare, Trash2, Settings2, Globe, FolderTree, Loader2, ShieldCheck, ArrowLeft, Download, Copy } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
-import { fetchK8sResource } from '../api/client';
+import { fetchK8sResource, saveTextFile } from '../api/client';
+import { chatToMarkdown, exportFileName } from './export';
 import { useAiChat } from './useAiChat';
 import { ChatThread } from './ChatThread';
 import { AiSettings } from './AiSettings';
@@ -119,6 +120,27 @@ export const AiChatView: React.FC<AiChatViewProps> = ({ contexts, currentContext
   const status = chat.status;
   const connected = chat.connected;
 
+  const markdown = () => chatToMarkdown(chat.messages, {
+    title: titleFor(chat.messages),
+    cluster,
+    namespace,
+    model: chat.current ? `${chat.current.label.replace(/ \(.*\)$/, '')} ${chat.current.model}` : undefined,
+  });
+  const saveMarkdown = async () => {
+    try {
+      const path = await saveTextFile(exportFileName(titleFor(chat.messages)), markdown());
+      onToast?.(path ? `Saved conversation to ${path}` : 'Downloading conversation');
+    } catch (e: any) {
+      onToast?.(`Export failed: ${e.message}`, 'error');
+    }
+  };
+  const copyMarkdown = () => {
+    navigator.clipboard?.writeText(markdown()).then(
+      () => onToast?.('Conversation copied as Markdown'),
+      () => onToast?.('Could not copy to the clipboard', 'error')
+    );
+  };
+
   return (
     <div className="h-full flex overflow-hidden bg-slate-950">
       {/* Conversations */}
@@ -199,6 +221,16 @@ export const AiChatView: React.FC<AiChatViewProps> = ({ contexts, currentContext
           </div>
 
           <div className="ml-auto flex items-center gap-2 shrink-0">
+            {chat.messages.length > 0 && !showSettings && (
+              <div className="flex items-center gap-0.5" title="Export the questions and answers (no cluster data)">
+                <button onClick={saveMarkdown} disabled={chat.busy} title="Save as Markdown (.md) in Downloads" className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40">
+                  <Download className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={copyMarkdown} disabled={chat.busy} title="Copy as Markdown" className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40">
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {connected.length > 0 && !showSettings && (
               <select
                 value={chat.provider || ''}
@@ -234,7 +266,7 @@ export const AiChatView: React.FC<AiChatViewProps> = ({ contexts, currentContext
                     Connect Claude, Gemini, OpenAI, Azure OpenAI, or a local model with Ollama. Then ask anything about any cluster and namespace in your kubeconfig.
                   </p>
                   <p className="flex items-center justify-center gap-1.5 text-[11px] text-emerald-300/90">
-                    <ShieldCheck className="w-3.5 h-3.5" /> Read-only access · secrets masked · you approve every reveal
+                    <ShieldCheck className="w-3.5 h-3.5" /> Reads the cluster · changes only when you click Apply · secrets masked
                   </p>
                 </div>
               ) : (

@@ -1,6 +1,6 @@
 [package]
 name = "freelens-rust"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 authors = ["Ashutosh Chandra"]
 description = "Kubellens - native Kubernetes desktop IDE (Rust + Tauri v2)"
@@ -23,6 +23,9 @@ reqwest = { version = "0.13", default-features = false, features = ["native-tls"
 regex = "1"
 # In-app updates: verify the downloaded release asset against GitHub's published digest
 sha2 = "0.10"
+# TLS certificate expiry: decode tls.crt from Secrets and read validity / names
+base64 = "0.22"
+x509-parser = "0.16"
 
 # API keys live in Windows Credential Manager / macOS Keychain (Linux uses a 0600 file)
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]

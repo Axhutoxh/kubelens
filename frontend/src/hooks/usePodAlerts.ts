@@ -4,6 +4,8 @@ import { fetchK8sResource, requestAttention } from '../api/client';
 
 export interface PodAlert {
   id: string;
+  /** 'cert': a TLS certificate alert (pod holds the Secret name); pod alerts leave it unset */
+  kind?: 'pod' | 'cert';
   at: number;
   namespace: string;
   pod: string;

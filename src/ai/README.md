@@ -1,11 +1,12 @@
 # AI assistant (`src/ai`)
 
-Ask Claude, Gemini, OpenAI, Azure OpenAI or a local Ollama model about the cluster from inside Kubellens, or use Kubellens' cluster tools from other AI apps over MCP. Both paths share one set of **read-only** tools and the same masking of sensitive data.
+Ask Claude, Gemini, OpenAI, Azure OpenAI or a local Ollama model about the cluster from inside Kubellens, or use Kubellens' cluster tools from other AI apps over MCP. Both paths share one set of **read-only** tools and the same masking of sensitive data. In the app, the assistant can also **propose** a fix (restart, scale, roll back, delete a pod, set an image); it only runs after the user reviews a preview and clicks Apply. MCP stays read-only.
 
 ```text
 src/ai/
 ├── mod.rs             # module root + /api/ai routes
 ├── tools.rs           # read-only kubectl tools (shared by chat and MCP), argument validation
+├── actions.rs         # changes the in-app assistant may propose: preview + apply after approval
 ├── redact.rs          # masks passwords, tokens, keys, private keys, URL credentials, random-looking tokens
 ├── agent.rs           # in-app chat: HTTP handlers + tool-calling loop + permission pause
 ├── mcp.rs             # MCP server on stdio (`kubellens --mcp`)
@@ -41,7 +42,19 @@ frontend/src/ai/
 | `get_events` | `get events --sort-by=.lastTimestamp` | |
 | `get_metrics` | `top pods/nodes` | |
 
-Nothing can change the cluster. Arguments are validated, and values never start with `-`, so they can't be read as kubectl flags. Output is capped at 15,000 characters per call.
+These can't change the cluster. Arguments are validated, and values never start with `-`, so they can't be read as kubectl flags. Output is capped at 15,000 characters per call.
+
+### Proposed changes (in-app chat only)
+
+| Tool | kubectl | Preview shows |
+| :--- | :--- | :--- |
+| `restart_workload` | `rollout restart <kind>/<name>` | last restart → now, pod count |
+| `scale_workload` | `scale --replicas=N` (0–100) | replicas current → new; red when scaling to 0 |
+| `rollback_deployment` | `rollout undo [--to-revision=N]` | revision and each changed image |
+| `delete_pod` | `delete pod --wait=false` | whether a controller recreates it; red when nothing does |
+| `set_image` | `set image <kind>/<name> <container>=<image>` | container image old → new |
+
+A proposal pauses the chat loop with a `permission` event of kind `action`. Its preview is computed from the live object (and fails, back to the model, when the target doesn't exist or nothing would change). The change runs only when the UI resends the conversation with `approvals: { <id>: true }`; declining tells the model nothing changed. These tools are not offered over MCP.
 
 ## Sensitive data and permission
 
@@ -90,4 +103,4 @@ Connecting checks the provider first by listing its models. Azure can't list dep
 cargo test ai::
 ```
 
-These cover masking (including config files embedded in JSON) and argument validation.
+These cover masking (including config files embedded in JSON), argument validation, and parsing / command building of the proposed changes.

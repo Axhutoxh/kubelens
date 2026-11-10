@@ -1,6 +1,7 @@
 //! AI assistant for Kubellens.
 //!
 //! - `tools`     read-only cluster tools (kubectl), shared by everything below
+//! - `actions`   changes the in-app assistant may propose (applied only after the user approves)
 //! - `redact`    masks passwords / tokens / keys before data leaves the machine
 //! - `providers` Claude and Gemini adapters behind one neutral message format
 //! - `agent`     in-app chat: HTTP endpoints + tool-calling loop with permission prompts
@@ -8,6 +9,7 @@
 //! - `keystore`  API keys in the OS credential store
 //! - `settings`  non-secret preferences (provider, model)
 
+pub mod actions;
 pub mod agent;
 pub mod keystore;
 pub mod mcp;

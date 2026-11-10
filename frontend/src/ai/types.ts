@@ -21,19 +21,34 @@ export type ChatMessage =
   | { role: 'assistant'; text: string; toolCalls: ToolCall[]; raw?: unknown; provider?: string }
   | { role: 'tool'; results: ToolResult[] };
 
+/** A change the assistant proposes, exactly as Apply would make it */
+export interface ActionPreview {
+  title: string;
+  cluster: string;
+  changes: Array<{ label: string; from: string; to: string }>;
+  /** The kubectl command Apply runs */
+  command: string;
+  note?: string;
+  /** Scaling to zero, deleting a pod nothing recreates */
+  danger: boolean;
+}
+
 export interface PermissionRequest {
+  /** 'reveal': read unmasked data; 'action': apply a change */
+  kind?: 'reveal' | 'action';
   id: string;
   name: string;
   args: Record<string, unknown>;
   summary: string;
+  preview?: ActionPreview;
 }
 
 /** Server-Sent Events from POST /api/ai/chat */
 export type ChatEvent =
   | { type: 'status'; text: string }
   | { type: 'messages'; messages: ChatMessage[] }
-  | { type: 'tool_start'; id: string; name: string; summary: string; reveal: boolean }
-  | { type: 'tool_end'; id: string; ok: boolean; redacted: number; truncated: boolean; chars: number; error?: string | null }
+  | { type: 'tool_start'; id: string; name: string; summary: string; reveal: boolean; action?: boolean; applied?: boolean }
+  | { type: 'tool_end'; id: string; ok: boolean; redacted: number; truncated: boolean; chars: number; error?: string | null; declined?: boolean }
   | { type: 'permission'; requests: PermissionRequest[] }
   | { type: 'error'; message: string }
   | { type: 'done' };

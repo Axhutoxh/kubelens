@@ -2,6 +2,11 @@
 
 mod ai;
 mod browser;
+mod certs;
+mod clusters;
+mod logsearch;
+mod rbac;
+mod timeline;
 mod update;
 
 use axum::{
@@ -407,6 +412,11 @@ async fn run_cli(
             timeout_secs, current_ctx
         )),
     }
+}
+
+/// Kubernetes object / namespace names. Also keeps user input from being read as a kubectl flag.
+fn valid_k8s_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 253 && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-._:".contains(c))
 }
 
 async fn run_kubectl_cmd(args: &[&str], current_ctx: &str) -> Result<String, String> {
@@ -1319,7 +1329,7 @@ struct SaveFileRequest {
 }
 
 // Only plain-text exports; a page that reaches the local API must not be able to drop executables
-const SAVE_ALLOWED_EXTENSIONS: &[&str] = &["log", "txt", "yaml", "yml", "json", "env"];
+const SAVE_ALLOWED_EXTENSIONS: &[&str] = &["log", "txt", "yaml", "yml", "json", "env", "md"];
 
 async fn handle_save_file(
     Json(req): Json<SaveFileRequest>,
@@ -2007,6 +2017,11 @@ async fn main() {
         .route("/helm/uninstall", post(handle_helm_uninstall))
         .route("/k8s/logs/multi", get(handle_multi_logs))
         .route("/exec/ws", get(handle_exec_ws))
+        .route("/certs", get(certs::handle_certs))
+        .route("/logs/search", post(logsearch::handle_log_search))
+        .route("/rbac", get(rbac::handle_rbac))
+        .route("/timeline", get(timeline::handle_timeline))
+        .route("/clusters/health", get(clusters::handle_clusters_health))
         .nest("/ai", ai::router())
         .nest("/update", update::router())
         .with_state(state);

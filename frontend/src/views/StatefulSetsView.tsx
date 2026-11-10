@@ -7,7 +7,8 @@ import {
   Trash2, 
   CheckCircle2, 
   AlertCircle,
-  Tag
+  Tag,
+  GitCommitVertical
 } from 'lucide-react';
 import { StatefulSetItem } from '../types/k8s';
 import { parseImage } from './DeploymentsView';
@@ -19,6 +20,7 @@ interface StatefulSetsViewProps {
   onRestart: (kind: string, name: string, namespace: string) => void;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+  onOpenTimeline?: (name: string, namespace: string) => void;
 }
 
 export const StatefulSetsView: React.FC<StatefulSetsViewProps> = ({
@@ -28,6 +30,7 @@ export const StatefulSetsView: React.FC<StatefulSetsViewProps> = ({
   onRestart,
   onOpenManifest,
   onDelete,
+  onOpenTimeline,
 }) => {
   const filtered = statefulSets.filter((s) => {
     const name = s.metadata.name.toLowerCase();
@@ -166,6 +169,13 @@ export const StatefulSetsView: React.FC<StatefulSetsViewProps> = ({
                         >
                           <RotateCw className="w-3.5 h-3.5" />
                         </button>
+                        {onOpenTimeline && (<button
+                          onClick={() => onOpenTimeline(sts.metadata.name, sts.metadata.namespace || 'default')}
+                          className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                          title="Timeline: what changed and when"
+                        >
+                          <GitCommitVertical className="w-3.5 h-3.5" />
+                        </button>)}
                         <button
                           onClick={() => onOpenManifest('statefulsets', sts.metadata.name, sts.metadata.namespace || 'default')}
                           className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"

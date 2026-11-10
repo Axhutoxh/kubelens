@@ -96,7 +96,7 @@ bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.6.0 && git push origin v1.6.0
+git tag v1.7.0 && git push origin v1.7.0
 ```
 The text at the top of the GitHub Release comes from [`.github/release-notes.md`](.github/release-notes.md); update it before tagging. GitHub's auto-generated change list is appended below it.
 | Platform | Release asset |
@@ -116,6 +116,18 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 ---
 
 ## ✨ Features Implemented in the Suite
+
+### New in 1.7
+* **AI fixes with your approval**: The assistant can propose a restart, scale, rollback, pod delete or image change. You see the cluster, current → new values and the exact kubectl command; nothing runs until you click **Apply**. MCP stays read-only.
+* **TLS certificate expiry**: **Configuration → TLS Certificates** lists every TLS Secret with domains, issuer, expiry and the Ingresses that serve it, and flags missing Secrets. The alert bell warns 30, 7 and 1 days before expiry and when a certificate has expired.
+* **Log Search**: Search up to 40 pods at once (e.g. `itam-*`) over the last 15 minutes to 24 hours; matches are merged by time and open the pod's live logs.
+* **Timeline**: Rollouts (with image changes), spec edits, restarts and OOM kills, ConfigMap / Secret changes and events of a deployment, stateful set, daemon set or pod in one list, with **Ask AI**.
+* **All Clusters**: Nodes ready, failing and pending pods and warnings of every kubeconfig context on one page.
+* **Who Can Do What**: Ask who can read Secrets, exec into pods or delete pods, or pick a user, group or service account to see everything it may do. Computed from RBAC objects; no impersonation rights needed.
+* **More resource views**: Autoscalers (HPA), Pod Disruption Budgets, Network Policies, Quotas & Limits, Service Accounts, Roles & Bindings, with problems called out (HPA at max, budgets that block drains, deny-all policies).
+* **Deployment health score**: 0–100 per deployment for limits, requests, probes, pinned image tags, replicas and root containers, with a filter for the ones below target.
+* **Saved log filters & bookmarks**: Save a log filter, bookmark log lines and jump back to them; both belong to the active workspace.
+* **Export AI chats**: Save a conversation as Markdown or copy it: questions, answers and what was checked, never raw cluster data.
 
 ### New in 1.6
 * **More AI providers**: Connect **OpenAI** (optional base URL for compatible gateways), **Azure OpenAI** (endpoint + deployment) or a local **Ollama** model (no key; cluster data stays on your machine) next to Claude and Gemini.
