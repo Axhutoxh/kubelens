@@ -14,7 +14,9 @@ import {
   X,
   AlertTriangle,
   GitCommitVertical,
-  HeartPulse
+  HeartPulse,
+  BarChart3,
+  Radio
 } from 'lucide-react';
 import { DeploymentItem } from '../types/k8s';
 import { PodMetric } from '../api/client';
@@ -113,6 +115,10 @@ interface DeploymentsViewProps {
   onOpenAllLogs?: (dep: DeploymentItem) => void;
   /** Rollouts, restarts, config changes and events of one deployment */
   onOpenTimeline?: (dep: DeploymentItem) => void;
+  /** Port forward to the deployment (kubectl picks one of its pods) */
+  onPortForward?: (dep: DeploymentItem) => void;
+  /** CPU / memory history and right-sizing */
+  onOpenUsage?: (dep: DeploymentItem) => void;
   onRefresh?: () => void;
   onToast?: (message: string, type?: 'success' | 'error') => void;
   /** Pod usage keyed by `${namespace}/${name}`; summed per deployment */
@@ -159,6 +165,8 @@ export const DeploymentsView: React.FC<DeploymentsViewProps> = ({
   onDelete,
   onOpenAllLogs,
   onOpenTimeline,
+  onPortForward,
+  onOpenUsage,
   onRefresh,
   onToast,
   podMetrics,
@@ -573,6 +581,24 @@ Differs from ${drift.count} deployments on ${drift.dominant}` : fullName}
                             className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
                           >
                             <GitCommitVertical className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {onOpenUsage && (
+                          <button
+                            onClick={() => onOpenUsage(dep)}
+                            title="CPU / memory history and right-sizing"
+                            className="p-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors"
+                          >
+                            <BarChart3 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {onPortForward && (
+                          <button
+                            onClick={() => onPortForward(dep)}
+                            title="Port forward to this deployment"
+                            className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-slate-800 rounded transition-colors"
+                          >
+                            <Radio className="w-3.5 h-3.5" />
                           </button>
                         )}
                         {/* Combined logs of all pods */}

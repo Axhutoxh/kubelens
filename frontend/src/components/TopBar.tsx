@@ -6,7 +6,6 @@ import {
   Terminal, 
   Filter, 
   Layers,
-  Radio,
   Sparkles,
   PanelLeftClose,
   PanelLeftOpen
@@ -23,8 +22,6 @@ interface TopBarProps {
   onOpenCreateModal: () => void;
   onToggleDock: () => void;
   isDockOpen: boolean;
-  portForwardsCount?: number;
-  onOpenPortForwards?: () => void;
   onOpenSmartLensStudio?: () => void;
   isSmartLensStudioActive?: boolean;
   onToggleSidebar?: () => void;
@@ -44,8 +41,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenCreateModal,
   onToggleDock,
   isDockOpen,
-  portForwardsCount = 0,
-  onOpenPortForwards,
   onOpenSmartLensStudio,
   isSmartLensStudioActive = false,
   onToggleSidebar,
@@ -149,18 +144,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           <Plus className="w-3.5 h-3.5" />
           <span className="whitespace-nowrap hidden @6xl:inline">New Resource</span>
         </button>
-
-        {/* Active Port Forwards Pill */}
-        {portForwardsCount > 0 && (
-          <button
-            onClick={onOpenPortForwards}
-            title={`${portForwardsCount} active port forward(s)`}
-            className="flex items-center gap-1.5 bg-cyan-950/90 border border-cyan-500/70 text-cyan-300 text-xs font-semibold px-2.5 py-1 rounded-md transition-colors hover:bg-cyan-900/60 cursor-pointer animate-pulse"
-          >
-            <Radio className="w-3.5 h-3.5 text-cyan-400" />
-            <span>{portForwardsCount} Forward{portForwardsCount > 1 ? 's' : ''}</span>
-          </button>
-        )}
 
         {extraActions}
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Cpu, CheckCircle2, AlertCircle, FileCode, Ban, PlayCircle, ArrowDownToLine, Loader2, X } from 'lucide-react';
+import { Cpu, CheckCircle2, AlertCircle, FileCode, Ban, PlayCircle, ArrowDownToLine, Loader2, X, SquareTerminal } from 'lucide-react';
 import { NodeItem } from '../types/k8s';
 import { NodeMetric } from '../api/client';
 import { NodeDetailModal } from '../components/NodeDetailModal';
@@ -13,6 +13,8 @@ interface NodesViewProps {
   metricsAvailable?: boolean;
   onOpenManifest: (kind: string, name: string) => void;
   onNodeAction?: (node: string, action: NodeAction, force?: boolean) => Promise<void>;
+  /** Shell on the node through a privileged helper pod */
+  onNodeShell?: (node: string) => void;
 }
 
 /** Thin usage bar that turns amber / red as it fills */
@@ -36,6 +38,7 @@ export const NodesView: React.FC<NodesViewProps> = ({
   metricsAvailable,
   onOpenManifest,
   onNodeAction,
+  onNodeShell,
 }) => {
   const [selectedNode, setSelectedNode] = useState<NodeItem | null>(null);
   const [busyNode, setBusyNode] = useState<string | null>(null);
@@ -179,6 +182,15 @@ export const NodesView: React.FC<NodesViewProps> = ({
                               <ArrowDownToLine className="w-3.5 h-3.5" />
                             </button>
                           </>
+                        )}
+                        {onNodeShell && (
+                          <button
+                            onClick={() => onNodeShell(node.metadata.name)}
+                            className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-amber-300 transition-colors"
+                            title="Node shell (privileged helper pod, removed afterwards)"
+                          >
+                            <SquareTerminal className="w-3.5 h-3.5" />
+                          </button>
                         )}
                         <button
                           onClick={() => onOpenManifest('nodes', node.metadata.name)}

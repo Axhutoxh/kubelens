@@ -1,6 +1,6 @@
 [package]
 name = "freelens-rust"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 authors = ["Ashutosh Chandra"]
 description = "Kubellens - native Kubernetes desktop IDE (Rust + Tauri v2)"

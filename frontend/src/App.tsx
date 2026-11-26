@@ -8,6 +8,14 @@ import { ViewLoader } from './components/ViewLoader';
 import { CommandPalette } from './components/CommandPalette';
 import { AlertsBell } from './components/AlertsBell';
 import { UpdateNotice } from './components/UpdateNotice';
+import { PortForwardsMenu } from './components/PortForwardsMenu';
+import { useLiveUpdates } from './hooks/useLiveUpdates';
+import { sendNotify, startForward } from './api/v18';
+import { SavedForward, loadSavedForwards, storeSavedForwards, KIND_SHORT } from './utils/savedForwards';
+import { inWorkspace } from './utils/logBookmarks';
+import type { ForwardTarget } from './components/PortForwardDialog';
+import type { UsageTarget } from './components/UsageModal';
+import type { DebugShellRequest } from './components/DebugShellDialog';
 import { Workspace, WorkspacesMenu, loadWorkspaces, storeWorkspaces } from './components/WorkspacesMenu';
 import { usePodAlerts, PodAlert } from './hooks/usePodAlerts';
 import { useCertAlerts } from './hooks/useCertAlerts';
@@ -42,11 +50,22 @@ const ClustersView = lazy(() => import('./views/ClustersView').then((m) => ({ de
 const RbacView = lazy(() => import('./views/RbacView').then((m) => ({ default: m.RbacView })));
 const PolicyView = lazy(() => import('./views/PolicyViews').then((m) => ({ default: m.PolicyView })));
 const TimelineModal = lazy(() => import('./components/TimelineModal').then((m) => ({ default: m.TimelineModal })));
+const ClusterSearchView = lazy(() => import('./views/ClusterSearchView').then((m) => ({ default: m.ClusterSearchView })));
+const KubeconfigView = lazy(() => import('./views/KubeconfigView').then((m) => ({ default: m.KubeconfigView })));
+const PortForwardDialog = lazy(() => import('./components/PortForwardDialog').then((m) => ({ default: m.PortForwardDialog })));
+const UsageModal = lazy(() => import('./components/UsageModal').then((m) => ({ default: m.UsageModal })));
+const DebugShellDialog = lazy(() => import('./components/DebugShellDialog').then((m) => ({ default: m.DebugShellDialog })));
+
+// Cross-cluster search hits open the matching view
+const KIND_VIEW: Record<string, string> = {
+  Pod: 'pods', Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', CronJob: 'jobs',
+  Service: 'services', Ingress: 'ingresses', ConfigMap: 'configmaps', Secret: 'secrets',
+};
 
 // Self-loading list views for autoscalers, budgets, network policies, quotas, service accounts, roles
 const POLICY_VIEWS = new Set<string>(['hpa', 'pdb', 'networkpolicies', 'quotas', 'serviceaccounts', 'roles']);
 // Views that fetch their own data and show their own loading state, so they skip the shared polling
-const OWN_DATA_VIEWS = ['smart-lens-studio', 'ai-chat', 'certificates', 'log-search', 'clusters', 'rbac', ...POLICY_VIEWS];
+const OWN_DATA_VIEWS = ['smart-lens-studio', 'ai-chat', 'certificates', 'log-search', 'clusters', 'rbac', 'cluster-search', 'kubeconfig', ...POLICY_VIEWS];
 const SELF_LOADING_VIEWS = new Set(['helm', 'crds', ...OWN_DATA_VIEWS]);
 const NO_POLL_VIEWS = new Set(OWN_DATA_VIEWS);
 
@@ -81,9 +100,13 @@ const VIEW_LABELS: Record<string, string> = {
   quotas: 'quotas and limits',
   serviceaccounts: 'service accounts',
   roles: 'roles and bindings',
+  'cluster-search': 'search',
+  kubeconfig: 'kubeconfig',
 };
 
 const POLL_INTERVAL_MS = 10000;
+// With live updates on, polling is only a safety net
+const LIVE_FALLBACK_MS = 60000;
 const PORT_FORWARD_POLL_MS = 4000;
 
 import { 
@@ -97,6 +120,8 @@ import {
   deleteResource,
   restartResource,
   fetchPortForwards,
+  openPortForward,
+  stopPortForward,
   fetchPodMetrics,
   fetchNodeMetrics,
   nodeAction,
@@ -204,14 +229,16 @@ export const App: React.FC = () => {
   };
 
   // Pod alerts (crash loops, OOM kills, image pull failures) for the selected namespace
-  const podAlerts = usePodAlerts(selectedNamespace, currentContext, (a) =>
-    showToast(`${a.reason}: ${a.namespace}/${a.pod}${a.container ? ` (${a.container})` : ''}`, 'error')
-  );
+  const podAlerts = usePodAlerts(selectedNamespace, currentContext, (a) => {
+    showToast(`${a.reason}: ${a.namespace}/${a.pod}${a.container ? ` (${a.container})` : ''}`, 'error');
+    sendNotify({ title: `${a.reason}: ${a.namespace}/${a.pod}`, text: [a.container && `container ${a.container}`, a.message].filter(Boolean).join(' · '), severity: 'error', cluster: currentContext });
+  });
 
   // TLS certificate expiry (30 / 7 / 1 days, expired) shares the bell and its on/off switch
-  const certAlerts = useCertAlerts(selectedNamespace, currentContext, podAlerts.settings.enabled, (a) =>
-    showToast(`${a.reason}: ${a.namespace}/${a.pod}`, 'error')
-  );
+  const certAlerts = useCertAlerts(selectedNamespace, currentContext, podAlerts.settings.enabled, (a) => {
+    showToast(`${a.reason}: ${a.namespace}/${a.pod}`, 'error');
+    sendNotify({ title: `${a.reason}: ${a.namespace}/${a.pod}`, text: a.message || '', severity: /expired|within a day|missing/i.test(a.reason) ? 'error' : 'warning', cluster: currentContext });
+  });
   const allAlerts = [...certAlerts.alerts, ...podAlerts.alerts].sort((a, b) => b.at - a.at);
 
   const openAlert = (a: PodAlert) => {
@@ -283,6 +310,52 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  // Port forwards to services / workloads, and saved forwards of the active workspace
+  const [forwardTarget, setForwardTarget] = useState<ForwardTarget | null>(null);
+  const [savedForwards, setSavedForwards] = useState<SavedForward[]>(loadSavedForwards);
+  const updateSavedForwards = (next: SavedForward[]) => { setSavedForwards(next); storeSavedForwards(next); };
+  const scopedSavedForwards = savedForwards.filter((sf) => inWorkspace(sf.workspaceId, activeWorkspace?.id ?? null));
+  const saveForward = (pf: PortForwardSession) => {
+    updateSavedForwards([...savedForwards, {
+      id: `sf-${Date.now()}`, workspaceId: activeWorkspace?.id ?? null, context: pf.context, namespace: pf.namespace,
+      kind: pf.kind || 'pod', name: pf.pod, port: pf.containerPort, localPort: pf.localPort,
+    }]);
+    showToast(`Saved ${KIND_SHORT[pf.kind || 'pod']}/${pf.pod}:${pf.containerPort}${activeWorkspace ? ` to workspace ${activeWorkspace.name}` : ''}`);
+  };
+  const startSavedForward = async (sf: SavedForward) => {
+    try {
+      const r = await startForward({ kind: sf.kind, name: sf.name, namespace: sf.namespace, port: sf.port, localPort: sf.localPort, context: sf.context });
+      showToast(`Forwarding ${r.session.url}`);
+    } catch (e: any) {
+      showToast(`${sf.name}: ${e.message}`, 'error');
+    }
+    loadPortForwards();
+  };
+
+  // Debug shells (ephemeral container / node) and the usage dialog
+  const [debugRequest, setDebugRequest] = useState<DebugShellRequest | null>(null);
+  const startDebugShell = (req: DebugShellRequest, opts: { image: string; target?: string; namespace?: string }) => {
+    const id = `debug-${Date.now()}`;
+    const task: DockTask = req.kind === 'pod'
+      ? { id, type: 'shell', title: `Debug (${req.pod})`, pod: req.pod, namespace: req.namespace, containers: [], context: req.context, sessionKey: 0, shellMode: 'debug', debugImage: opts.image, debugTarget: opts.target }
+      : { id, type: 'shell', title: `Node (${req.node})`, pod: '', namespace: opts.namespace || 'default', containers: [], context: req.context, sessionKey: 0, shellMode: 'node', debugImage: opts.image, node: req.node };
+    setDockTasks((prev) => [...prev, task]);
+    setActiveDockTaskId(id);
+    setIsDockOpen(true);
+  };
+  const [usageTarget, setUsageTarget] = useState<UsageTarget | null>(null);
+
+  // Port forwards open in the system browser (the desktop webview ignores new-window links)
+  const handleOpenForward = async (pf: PortForwardSession) => {
+    try {
+      await openPortForward(pf);
+    } catch (e: any) {
+      navigator.clipboard?.writeText(pf.url);
+      showToast(`${e.message || 'Could not open the browser'}; URL copied`, 'error');
+      loadPortForwards();
+    }
+  };
+
   useEffect(() => {
     loadPortForwards();
     // Skip polling while the window is minimized / hidden
@@ -316,7 +389,10 @@ export const App: React.FC = () => {
   const viewKey = `${currentView}|${selectedNamespace}`;
 
   // Fetch all Resources for active cluster & namespace
+  const lastLoadRef = useRef(0);
+  const liveRef = useRef(false);
   const loadResources = useCallback(async (silent = false) => {
+    lastLoadRef.current = Date.now();
     if (NO_POLL_VIEWS.has(currentView)) return;
     const loadedKey = `${currentView}|${selectedNamespace}`;
     if (!silent) setIsRefreshing(true);
@@ -419,7 +495,10 @@ export const App: React.FC = () => {
     loadResources();
     // Poll only while the window is visible, and catch up as soon as it is shown again
     const interval = setInterval(() => {
-      if (!document.hidden) loadResources(true);
+      if (document.hidden) return;
+      // Live updates reload on change; polling then only runs as a safety net
+      if (liveRef.current && Date.now() - lastLoadRef.current < LIVE_FALLBACK_MS) return;
+      loadResources(true);
     }, POLL_INTERVAL_MS);
     const onVisible = () => {
       if (!document.hidden) loadResources(true);
@@ -430,6 +509,10 @@ export const App: React.FC = () => {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [loadResources, currentView]);
+
+  // Live updates for the view on screen (kubectl watches on the backend)
+  const live = useLiveUpdates(NO_POLL_VIEWS.has(currentView) ? '' : currentView, selectedNamespace, currentContext, () => loadResources(true));
+  liveRef.current = live;
 
   // Handle Switch Context
   const handleSwitchContext = async (newCtx: string) => {
@@ -673,13 +756,30 @@ export const App: React.FC = () => {
           onOpenCreateModal={() => setIsCreateModalOpen(true)}
           onToggleDock={() => setIsDockOpen(!isDockOpen)}
           isDockOpen={isDockOpen}
-          portForwardsCount={portForwards.length}
-          onOpenPortForwards={() => setCurrentView('pods')}
           onOpenSmartLensStudio={() => setCurrentView('smart-lens-studio')}
           isSmartLensStudioActive={currentView === 'smart-lens-studio'}
           extraActions={
             <>
               <UpdateNotice manualCheck={updateCheck} onToast={showToast} />
+              <PortForwardsMenu
+                forwards={portForwards}
+                saved={scopedSavedForwards}
+                workspaceName={activeWorkspace?.name}
+                onSave={saveForward}
+                onStartSaved={startSavedForward}
+                onRemoveSaved={(id) => updateSavedForwards(savedForwards.filter((s) => s.id !== id))}
+                onOpen={handleOpenForward}
+                onCopy={(pf) => { navigator.clipboard?.writeText(pf.url); showToast(`Copied ${pf.url}`); }}
+                onStop={async (pf) => {
+                  try {
+                    await stopPortForward(pf.id);
+                    showToast(`Stopped forwarding ${pf.url}`);
+                  } catch (e: any) {
+                    showToast(e.message || 'Could not stop the port forward', 'error');
+                  }
+                  loadPortForwards();
+                }}
+              />
               <button
                 onClick={() => { setIsAiOpen(false); setCurrentView('ai-chat'); }}
                 title="AI Chat (Ctrl+I opens a quick side panel)"
@@ -755,6 +855,7 @@ export const App: React.FC = () => {
               pods={pods}
               searchQuery={searchQuery}
               activePortForwards={portForwards}
+              onOpenForward={handleOpenForward}
               onSelectPod={(pod) => {
                 setSelectedPod(pod);
                 setSelectedPodContext(undefined);
@@ -796,6 +897,18 @@ export const App: React.FC = () => {
                 handleOpenMultiLogs({ selector, namespace: dep.metadata.namespace || 'default', title: `Logs (${dep.metadata.name}, all pods)` });
               }}
               onOpenTimeline={(dep) => setTimelineTarget({ kind: 'deployment', name: dep.metadata.name, namespace: dep.metadata.namespace || 'default' })}
+              onOpenUsage={(dep) => setUsageTarget({
+                title: `deployment ${dep.metadata.name}`,
+                namespace: dep.metadata.namespace || 'default',
+                matchLabels: dep.spec.selector?.matchLabels,
+                containers: dep.spec.template?.spec?.containers,
+              })}
+              onPortForward={(dep) => setForwardTarget({
+                kind: 'deployment',
+                name: dep.metadata.name,
+                namespace: dep.metadata.namespace || 'default',
+                ports: (dep.spec.template?.spec?.containers || []).flatMap((c: any) => (c.ports || []).map((p: any) => ({ port: p.containerPort, name: p.name }))),
+              })}
               onRefresh={() => loadResources()}
               podMetrics={podMetrics}
               metricsAvailable={metricsAvailable}
@@ -890,12 +1003,19 @@ export const App: React.FC = () => {
               nodeMetrics={nodeMetrics}
               metricsAvailable={metricsAvailable}
               onNodeAction={handleNodeAction}
+              onNodeShell={(node) => setDebugRequest({ kind: 'node', node })}
             />
           )}
 
           {currentView === 'services' && (
             <ServicesView
               services={services}
+              onPortForward={(svc) => setForwardTarget({
+                kind: 'service',
+                name: svc.metadata.name,
+                namespace: svc.metadata.namespace || 'default',
+                ports: (svc.spec.ports || []).map((p: any) => ({ port: p.port, name: p.name })),
+              })}
               searchQuery={searchQuery}
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
@@ -954,6 +1074,22 @@ export const App: React.FC = () => {
               onOpenManifest={handleOpenManifest}
               onDelete={handleDeleteResource}
             />
+          )}
+
+          {currentView === 'cluster-search' && (
+            <ClusterSearchView
+              currentContext={currentContext}
+              onOpen={async (ctx, kind, ns, name) => {
+                if (ctx !== currentContext) await handleSwitchContext(ctx);
+                setSelectedNamespace(ns);
+                setCurrentView(KIND_VIEW[kind] || 'overview');
+                setSearchQuery(name);
+              }}
+            />
+          )}
+
+          {currentView === 'kubeconfig' && (
+            <KubeconfigView onChanged={loadContexts} onSwitch={handleSwitchContext} onToast={showToast} />
           )}
 
           {currentView === 'certificates' && (
@@ -1072,6 +1208,11 @@ export const App: React.FC = () => {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span>Connected: {currentContext || 'Detecting...'}</span>
             </span>
+            {!NO_POLL_VIEWS.has(currentView) && (
+              <span className={live ? 'text-cyan-400' : 'text-slate-500'} title={live ? 'Changes appear as they happen (kubectl watch)' : 'Refreshing every 10 s'}>
+                {live ? '● Live' : '○ Polling'}
+              </span>
+            )}
             {selectedNamespace !== '_all' && (
               <span className="text-slate-500">• Namespace: <span className="text-slate-300 font-mono">{selectedNamespace}</span></span>
             )}
@@ -1173,6 +1314,32 @@ export const App: React.FC = () => {
         target={scaleTarget}
       />
 
+      {forwardTarget && (
+        <Suspense fallback={null}>
+          <PortForwardDialog
+            target={{ ...forwardTarget, context: forwardTarget.context }}
+            onClose={() => setForwardTarget(null)}
+            onStarted={(pf, open) => {
+              showToast(`⚡ Forwarding ${pf.url} → ${KIND_SHORT[pf.kind || 'pod']}/${pf.pod}`);
+              loadPortForwards();
+              if (open) handleOpenForward(pf);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {usageTarget && (
+        <Suspense fallback={null}>
+          <UsageModal target={usageTarget} onClose={() => setUsageTarget(null)} />
+        </Suspense>
+      )}
+
+      {debugRequest && (
+        <Suspense fallback={null}>
+          <DebugShellDialog request={debugRequest} onClose={() => setDebugRequest(null)} onStart={(opts) => startDebugShell(debugRequest, opts)} />
+        </Suspense>
+      )}
+
       {timelineTarget && (
         <Suspense fallback={null}>
           <TimelineModal target={timelineTarget} onClose={() => setTimelineTarget(null)} onAskAi={askAi} />
@@ -1198,6 +1365,7 @@ export const App: React.FC = () => {
           }}
           onOpenLogs={(pod, ns, containers) => handleOpenLogs(pod, ns, containers, selectedPodContext)}
           onOpenManifest={(kind, name, ns) => handleOpenManifest(kind, name, ns, selectedPodContext)}
+          onOpenDebugShell={(pod, ns, containers) => setDebugRequest({ kind: 'pod', pod, namespace: ns, containers, context: selectedPodContext })}
           onRefreshList={() => {
             loadResources();
             loadPortForwards();

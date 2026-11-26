@@ -39,6 +39,8 @@ interface PodsViewProps {
   pods: PodItem[];
   searchQuery: string;
   activePortForwards?: PortForwardSession[];
+  /** Opens a running port forward in the browser (the ":port" badge) */
+  onOpenForward?: (pf: PortForwardSession) => void;
   /** Keyed by `${namespace}/${name}` */
   podMetrics?: Map<string, PodMetric>;
   metricsAvailable?: boolean;
@@ -60,6 +62,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
   pods,
   searchQuery,
   activePortForwards = [],
+  onOpenForward,
   podMetrics,
   metricsAvailable,
   onSelectPod,
@@ -264,7 +267,7 @@ export const PodsView: React.FC<PodsViewProps> = ({
                 const totalRestarts = pod.status.containerStatuses?.reduce((acc, c) => acc + c.restartCount, 0) ?? 0;
 
                 const podForwards = activePortForwards.filter(
-                  (pf) => pf.pod === pod.metadata.name && pf.namespace === pod.metadata.namespace
+                  (pf) => (pf.kind || 'pod') === 'pod' && pf.pod === pod.metadata.name && pf.namespace === pod.metadata.namespace
                 );
                 const isSelected = selected.has(podKey(pod));
                 const usage = podMetrics?.get(podKey(pod));
@@ -292,13 +295,14 @@ export const PodsView: React.FC<PodsViewProps> = ({
                         {pod.metadata.name}
                       </span>
                       {podForwards.length > 0 && (
-                        <span 
+                        <span
                           onClick={(e) => {
                             e.stopPropagation();
-                            onSelectPod(pod);
+                            if (onOpenForward) onOpenForward(podForwards[0]);
+                            else onSelectPod(pod);
                           }}
-                          className="bg-cyan-950/80 text-cyan-300 border border-cyan-500/60 px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1 animate-pulse"
-                          title={`Active Port Forward: ${podForwards[0].url}`}
+                          className="bg-cyan-950/80 text-cyan-300 border border-cyan-500/60 px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1 animate-pulse cursor-pointer hover:bg-cyan-900/80"
+                          title={onOpenForward ? `Open ${podForwards[0].url} in your browser` : `Active Port Forward: ${podForwards[0].url}`}
                         >
                           <Radio className="w-2.5 h-2.5" />
                           <span>:{podForwards[0].localPort}</span>

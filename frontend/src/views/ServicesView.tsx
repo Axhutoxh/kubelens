@@ -1,5 +1,5 @@
 import React from 'react';
-import { Network, FileCode, Trash2 } from 'lucide-react';
+import { Network, FileCode, Trash2, Radio } from 'lucide-react';
 import { ServiceItem } from '../types/k8s';
 
 interface ServicesViewProps {
@@ -7,6 +7,8 @@ interface ServicesViewProps {
   searchQuery: string;
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onDelete: (kind: string, name: string, namespace: string) => void;
+  /** Port forward to the service (kubectl picks a ready pod behind it) */
+  onPortForward?: (svc: ServiceItem) => void;
 }
 
 export const ServicesView: React.FC<ServicesViewProps> = ({
@@ -14,6 +16,7 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
   searchQuery,
   onOpenManifest,
   onDelete,
+  onPortForward,
 }) => {
   const filtered = services.filter((s) => {
     const name = s.metadata.name.toLowerCase();
@@ -86,6 +89,15 @@ export const ServicesView: React.FC<ServicesViewProps> = ({
                     <td className="py-2.5 px-4 text-slate-400">{extIp}</td>
                     <td className="py-2.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1 font-sans">
+                        {onPortForward && svc.spec.selector && svc.spec.type !== 'ExternalName' && (
+                          <button
+                            onClick={() => onPortForward(svc)}
+                            className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                            title="Port forward to this service"
+                          >
+                            <Radio className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           onClick={() => onOpenManifest('services', svc.metadata.name, svc.metadata.namespace || 'default')}
                           className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"

@@ -21,9 +21,16 @@ import {
   Search,
   Bookmark,
   BookmarkCheck,
-  Filter
+  Filter,
+  ListTree,
+  ShieldCheck,
+  ArrowLeft,
+  Loader2
 } from 'lucide-react';
 import { applyManifest, multiLogsUrl, saveTextFile } from '../api/client';
+import { ExplainField, ReviewedObject, explainPath, reviewManifest } from '../api/v18';
+import { diffLines, withContext } from '../utils/diff';
+import { toYaml, yamlPathAt } from '../utils/yaml';
 import { FindBar, HighlightTextarea, findMatches } from './FindInText';
 import {
   LogBookmark,
@@ -72,6 +79,13 @@ export interface DockTask {
   selector?: string;
   /** shell: bumped to reconnect */
   sessionKey?: number;
+  /** shell: exec (default), an ephemeral debug container, or a node shell */
+  shellMode?: 'exec' | 'debug' | 'node';
+  debugImage?: string;
+  /** debug: container whose processes the debug container sees */
+  debugTarget?: string;
+  /** node shell: the node */
+  node?: string;
 }
 
 interface DockProps {
@@ -193,6 +207,13 @@ export const Dock: React.FC<DockProps> = ({
   const [yamlQuery, setYamlQuery] = useState('');
   const [yamlCase, setYamlCase] = useState(false);
   const [yamlActive, setYamlActive] = useState(0);
+  // Review before Apply: server-side dry run + diff per object
+  const [review, setReview] = useState<{ loading: boolean; valid?: boolean; errors?: string; objects?: ReviewedObject[] } | null>(null);
+  // Field help: fields valid at the cursor (kubectl explain)
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [fieldHelp, setFieldHelp] = useState<{ path: string | null; fields: ExplainField[]; loading: boolean; error?: string }>({ path: null, fields: [], loading: false });
+  const [fieldFilter, setFieldFilter] = useState('');
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logFilterRef = useRef<HTMLInputElement>(null);
@@ -205,6 +226,7 @@ export const Dock: React.FC<DockProps> = ({
     if (activeTask.type === 'manifest') {
       setYamlContent(activeTask.content || '');
       setApplyStatus(null);
+      setReview(null);
     } else if (activeTask.type === 'logs') {
       setShowPrevious(false);
       if (activeTask.container) {
@@ -463,12 +485,52 @@ export const Dock: React.FC<DockProps> = ({
   const yamlMatches = useMemo(() => findMatches(yamlContent, yamlQuery, { caseSensitive: yamlCase }).length, [yamlContent, yamlQuery, yamlCase]);
   useEffect(() => setYamlActive(0), [yamlQuery, yamlCase]);
 
+  const startReview = async () => {
+    if (!yamlContent.trim()) return;
+    setReview({ loading: true });
+    try {
+      const r = await reviewManifest(yamlContent, activeTask.context);
+      setReview({ loading: false, valid: r.valid, errors: r.errors, objects: r.objects });
+    } catch (err: any) {
+      setReview({ loading: false, valid: false, errors: err.message });
+    }
+  };
+
+  // Field help follows the cursor (debounced; kubectl explain results are cached server-side)
+  const helpPath = useMemo(() => (fieldsOpen ? yamlPathAt(yamlContent, cursor) : null), [fieldsOpen, yamlContent, cursor]);
+  useEffect(() => {
+    if (!fieldsOpen || activeTask?.type !== 'manifest') return;
+    if (!helpPath) { setFieldHelp({ path: null, fields: [], loading: false }); return; }
+    if (helpPath === fieldHelp.path && !fieldHelp.error) return;
+    let alive = true;
+    const t = setTimeout(() => {
+      setFieldHelp((f) => ({ ...f, loading: true }));
+      explainPath(helpPath, activeTask?.context)
+        .then((r) => alive && setFieldHelp({ path: helpPath, fields: r.fields, loading: false }))
+        .catch((e) => alive && setFieldHelp({ path: helpPath, fields: [], loading: false, error: e.message }));
+    }, 250);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [helpPath, fieldsOpen, activeTask?.id]);
+
+  /** Inserts "field: " at the cursor, on its own line with the right indent. */
+  const insertField = (name: string) => {
+    const lineStart = yamlContent.lastIndexOf('\n', cursor - 1) + 1;
+    const line = yamlContent.slice(lineStart, cursor);
+    const indent = /^\s*/.exec(line)?.[0] ?? '';
+    const insert = line.trim() ? `\n${indent.replace(/-/g, ' ')}${name}: ` : `${name}: `;
+    setYamlContent(yamlContent.slice(0, cursor) + insert + yamlContent.slice(cursor));
+    setCursor(cursor + insert.length);
+  };
+  const trackCursor = (e: React.SyntheticEvent<HTMLTextAreaElement>) => setCursor(e.currentTarget.selectionStart);
+
   const handleApply = async () => {
     if (!yamlContent.trim()) return;
     setIsApplying(true);
     setApplyStatus(null);
     try {
       const res = await applyManifest(yamlContent, activeTask.context);
+      setReview(null);
       setApplyStatus({ success: true, message: res.output || 'Applied successfully' });
     } catch (err: any) {
       setApplyStatus({ success: false, message: err.message });
@@ -503,6 +565,11 @@ export const Dock: React.FC<DockProps> = ({
 
   // Ctrl+F inside the dock: find in the YAML editor, or focus the log filter
   const onDockKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === ' ' && activeTask.type === 'manifest') {
+      e.preventDefault();
+      setFieldsOpen(true);
+      return;
+    }
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f') return;
     if (activeTask.type === 'manifest') {
       e.preventDefault();
@@ -607,12 +674,20 @@ export const Dock: React.FC<DockProps> = ({
                 <Search className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={handleApply}
-                disabled={isApplying}
+                onClick={() => setFieldsOpen((o) => !o)}
+                className={toggleBtn(fieldsOpen)}
+                title="Field help: fields valid at the cursor (Ctrl+Space)"
+              >
+                <ListTree className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={startReview}
+                disabled={isApplying || review?.loading}
+                title="Validate against the cluster and show what would change"
                 className="flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded transition-colors disabled:opacity-50"
               >
-                <Play className="w-3 h-3 fill-current" />
-                <span>{isApplying ? 'Applying...' : 'Apply Manifest'}</span>
+                {review?.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                <span>{review?.loading ? 'Checking…' : 'Review & Apply'}</span>
               </button>
             </>
           )}
@@ -846,6 +921,10 @@ export const Dock: React.FC<DockProps> = ({
                 namespace={t.namespace!}
                 container={t.container}
                 context={t.context}
+                mode={t.shellMode}
+                image={t.debugImage}
+                target={t.debugTarget}
+                node={t.node}
                 sessionKey={t.sessionKey || 0}
                 visible={isOpen && t.id === activeTask.id}
               />
@@ -882,17 +961,102 @@ export const Dock: React.FC<DockProps> = ({
                 />
               </div>
             )}
-            <HighlightTextarea
-              value={yamlContent}
-              onChange={setYamlContent}
-              query={yamlFindOpen ? yamlQuery : ''}
-              findOptions={{ caseSensitive: yamlCase }}
-              activeMatch={yamlFindOpen && yamlMatches ? yamlActive : -1}
-              typography="p-3 font-mono text-xs"
-              containerClassName="flex-1 min-h-0 bg-slate-950"
-              className="h-full text-slate-200 resize-none focus:outline-none selection:bg-cyan-500/30"
-              placeholder="Kubernetes YAML manifest..."
-            />
+            {review && !review.loading ? (
+              <div className="flex-1 min-h-0 overflow-auto bg-slate-950 text-xs">
+                <div className="sticky top-0 z-10 px-3 py-1.5 border-b border-slate-800 bg-slate-900/95 flex items-center gap-2">
+                  <button onClick={() => setReview(null)} className="flex items-center gap-1 text-slate-400 hover:text-slate-200"><ArrowLeft className="w-3.5 h-3.5" /> Back to editor</button>
+                  <span className={`ml-2 font-semibold ${review.valid ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    {review.valid ? 'Valid: the cluster accepts this manifest' : 'Not valid: nothing would be applied'}
+                  </span>
+                  {review.valid && (
+                    <span className="text-slate-500">
+                      {(review.objects || []).map((o) => o.action).filter((a) => a !== 'unchanged').length} of {(review.objects || []).length} object(s) change
+                    </span>
+                  )}
+                  {review.valid && (
+                    <button
+                      onClick={handleApply}
+                      disabled={isApplying || (review.objects || []).every((o) => o.action === 'unchanged')}
+                      className="ml-auto flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded disabled:opacity-40"
+                    >
+                      <Play className="w-3 h-3 fill-current" /> {isApplying ? 'Applying…' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+                {!review.valid && <pre className="m-3 p-3 rounded bg-rose-950/40 border border-rose-900/70 text-rose-200 whitespace-pre-wrap font-mono">{review.errors}</pre>}
+                {(review.objects || []).map((o) => {
+                  const before = o.live ? toYaml(o.live) : '';
+                  const after = toYaml(o.after);
+                  const ops = o.action === 'create' ? after.split('\n').map((text) => ({ type: 'add' as const, text })) : withContext(diffLines(before, after), 3);
+                  return (
+                    <div key={`${o.kind}/${o.namespace}/${o.name}`} className="m-3 rounded border border-slate-800">
+                      <div className="px-3 py-1.5 border-b border-slate-800 flex items-center gap-2 bg-slate-900/60">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${o.action === 'create' ? 'bg-emerald-950 text-emerald-300' : o.action === 'update' ? 'bg-amber-950 text-amber-300' : 'bg-slate-800 text-slate-400'}`}>{o.action}</span>
+                        <span className="font-mono text-slate-200">{o.kind}/{o.name}</span>
+                        {o.namespace && <span className="text-slate-500 font-mono">{o.namespace}</span>}
+                      </div>
+                      {o.action === 'unchanged' ? (
+                        <div className="px-3 py-2 text-slate-500">No changes.</div>
+                      ) : (
+                        <pre className="font-mono text-[11.5px] leading-relaxed overflow-x-auto py-1">
+                          {ops.map((op, i) => op === null
+                            ? <div key={i} className="px-3 text-slate-600">⋯</div>
+                            : <div key={i} className={`px-3 whitespace-pre ${op.type === 'add' ? 'bg-emerald-950/50 text-emerald-200' : op.type === 'del' ? 'bg-rose-950/50 text-rose-200' : 'text-slate-400'}`}>{op.type === 'add' ? '+ ' : op.type === 'del' ? '- ' : '  '}{op.text}</div>)}
+                        </pre>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 flex">
+                <HighlightTextarea
+                  value={yamlContent}
+                  onChange={setYamlContent}
+                  query={yamlFindOpen ? yamlQuery : ''}
+                  findOptions={{ caseSensitive: yamlCase }}
+                  activeMatch={yamlFindOpen && yamlMatches ? yamlActive : -1}
+                  typography="p-3 font-mono text-xs"
+                  containerClassName="flex-1 min-w-0 min-h-0 bg-slate-950"
+                  className="h-full text-slate-200 resize-none focus:outline-none selection:bg-cyan-500/30"
+                  placeholder="Kubernetes YAML manifest..."
+                  onSelect={trackCursor}
+                  onKeyUp={trackCursor}
+                  onClick={trackCursor}
+                />
+                {fieldsOpen && (
+                  <aside className="w-72 shrink-0 border-l border-slate-800 bg-slate-900/60 flex flex-col text-[11px]">
+                    <div className="px-2.5 py-1.5 border-b border-slate-800 flex items-center gap-1.5">
+                      <ListTree className="w-3.5 h-3.5 text-cyan-400" />
+                      <span className="font-mono text-slate-300 truncate" title={fieldHelp.path || ''}>{helpPath || 'no kind: in this document'}</span>
+                      {fieldHelp.loading && <Loader2 className="w-3 h-3 animate-spin text-slate-500" />}
+                      <button onClick={() => setFieldsOpen(false)} className="ml-auto p-0.5 text-slate-500 hover:text-slate-200"><X className="w-3 h-3" /></button>
+                    </div>
+                    <input
+                      value={fieldFilter}
+                      onChange={(e) => setFieldFilter(e.target.value)}
+                      placeholder="Filter fields…"
+                      className="mx-2 my-1.5 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-200 focus:outline-none focus:border-cyan-500"
+                    />
+                    <div className="flex-1 overflow-auto">
+                      {fieldHelp.error && <div className="px-2.5 py-1 text-rose-300">{fieldHelp.error}</div>}
+                      {!fieldHelp.loading && !fieldHelp.error && helpPath && fieldHelp.fields.length === 0 && <div className="px-2.5 py-1 text-slate-500">No sub-fields here.</div>}
+                      {fieldHelp.fields.filter((f) => !fieldFilter || f.name.toLowerCase().includes(fieldFilter.toLowerCase())).map((f) => (
+                        <button key={f.name} onClick={() => insertField(f.name)} className="w-full text-left px-2.5 py-1 hover:bg-slate-800/70 border-b border-slate-800/50" title={f.description}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-cyan-300">{f.name}</span>
+                            {f.required && <span className="text-rose-300 text-[9.5px]">required</span>}
+                            <span className="ml-auto text-slate-500 font-mono text-[10px] truncate max-w-[110px]">{f.type}</span>
+                          </div>
+                          {f.description && <div className="text-slate-500 truncate">{f.description}</div>}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="px-2.5 py-1 border-t border-slate-800 text-[10px] text-slate-600">From the cluster's schema (kubectl explain). Click to insert.</div>
+                  </aside>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
