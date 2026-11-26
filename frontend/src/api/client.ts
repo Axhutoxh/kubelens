@@ -179,6 +179,19 @@ export async function fetchPortForwards() {
   return res.json();
 }
 
+/**
+ * Opens a running port forward in a browser tab. The desktop webview ignores links that ask
+ * for a new window, so when the API runs on this machine the backend opens the system browser.
+ */
+export async function openPortForward(session: { id: string; url: string }) {
+  const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  if (!isLocal) {
+    window.open(session.url, '_blank', 'noopener');
+    return;
+  }
+  await postJson('/port-forward/open', { id: session.id }, 'Could not open the browser');
+}
+
 export async function fetchResourceDetail<T = any>(
   kind: string, 
   name: string, 
@@ -383,11 +396,24 @@ export function multiLogsUrl(opts: {
   return url.toString();
 }
 
-export function execSocketUrl(opts: { pod: string; namespace: string; container?: string; context?: string; cols: number; rows: number }) {
+export interface ShellMode {
+  /** exec (default) | debug: ephemeral debug container | node: shell on a node */
+  mode?: 'exec' | 'debug' | 'node';
+  image?: string;
+  /** debug: container whose processes the debug container sees */
+  target?: string;
+  node?: string;
+}
+
+export function execSocketUrl(opts: { pod: string; namespace: string; container?: string; context?: string; cols: number; rows: number } & ShellMode) {
   const url = new URL(`${API_BASE}/exec/ws`, window.location.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('pod', opts.pod);
   url.searchParams.set('namespace', opts.namespace);
+  if (opts.mode && opts.mode !== 'exec') url.searchParams.set('mode', opts.mode);
+  if (opts.image) url.searchParams.set('image', opts.image);
+  if (opts.target) url.searchParams.set('target', opts.target);
+  if (opts.node) url.searchParams.set('node', opts.node);
   if (opts.container) url.searchParams.set('container', opts.container);
   if (opts.context && opts.context.trim()) url.searchParams.set('context', opts.context.trim());
   url.searchParams.set('cols', String(opts.cols));

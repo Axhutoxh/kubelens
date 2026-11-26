@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BellOff, BellRing, Monitor } from 'lucide-react';
 import { PodAlert } from '../hooks/usePodAlerts';
+import { NotifySettings } from './NotifySettings';
 
 interface AlertsBellProps {
   alerts: PodAlert[];
@@ -108,6 +109,7 @@ export const AlertsBell: React.FC<AlertsBellProps> = ({
             </button>
           </div>
           {desktopNote && <div className="px-3 py-1.5 text-[11px] text-amber-300 border-b border-slate-800">{desktopNote}</div>}
+          <NotifySettings />
 
           <div className="flex-1 overflow-auto">
             {!enabled ? (

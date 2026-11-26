@@ -4,10 +4,19 @@ mod ai;
 mod browser;
 mod certs;
 mod clusters;
+mod helmops;
+mod kubeconfig;
 mod logsearch;
+mod manifests;
+mod notify;
+mod portforward;
 mod rbac;
+mod search;
+mod security;
 mod timeline;
 mod update;
+mod usage;
+mod watch;
 
 use axum::{
     extract::{
@@ -45,7 +54,6 @@ use tokio::{
     process::Command,
     sync::{OnceCell, RwLock},
 };
-use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct CachedEntry {
@@ -158,33 +166,13 @@ fn json_response(body: Bytes) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct PortForwardSession {
-    id: String,
-    pod: String,
-    namespace: String,
-    #[serde(rename = "containerPort")]
-    container_port: u16,
-    #[serde(rename = "localPort")]
-    local_port: u16,
-    url: String,
-    status: String,
-    #[serde(rename = "startedAt")]
-    started_at: String,
-}
-
-struct ActivePortForward {
-    session: PortForwardSession,
-    child: Arc<std::sync::Mutex<Option<std::process::Child>>>,
-}
-
 #[derive(Clone)]
 struct AppState {
     current_context: Arc<RwLock<String>>,
     // The initial `kubectl config current-context` lookup runs in the background so the
     // window can open immediately; handlers wait on it only if it hasn't finished yet.
     context_init: Arc<OnceCell<()>>,
-    port_forwards: Arc<RwLock<HashMap<String, ActivePortForward>>>,
+    port_forwards: portforward::Forwards,
     cache: ResourceCache,
 }
 
@@ -247,22 +235,6 @@ struct PodEventsQuery {
     name: String,
     namespace: String,
     context: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StartPortForwardRequest {
-    pod: String,
-    namespace: String,
-    #[serde(rename = "containerPort")]
-    container_port: u16,
-    #[serde(rename = "localPort")]
-    local_port: Option<u16>,
-    context: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StopPortForwardRequest {
-    id: String,
 }
 
 #[derive(Deserialize)]
@@ -783,6 +755,12 @@ async fn handle_pod_logs(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(5))))
 }
 
+/// Nanoseconds since the epoch, for unique temp file names
+fn current_unix_nanos() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+}
+
 fn current_time_str() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -1007,140 +985,6 @@ async fn handle_set_env(
     }
 }
 
-async fn handle_start_port_forward(
-    State(state): State<AppState>,
-    Json(req): Json<StartPortForwardRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let current_ctx = state.ctx().await;
-    let ctx_to_use = req.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx);
-    
-    let requested_port = req.local_port.unwrap_or(0);
-    let local_port = if requested_port > 0 {
-        requested_port
-    } else {
-        req.container_port
-    };
-
-    let session_id = format!("{}-{}-{}", req.pod, local_port, req.container_port);
-
-    {
-        let lock = state.port_forwards.read().await;
-        if lock.contains_key(&session_id) {
-            return Err((
-                StatusCode::CONFLICT,
-                "A port forward session for this port already exists".to_string(),
-            ));
-        }
-    }
-
-    let mut cmd = create_kubectl_std_cmd();
-    if !ctx_to_use.is_empty() {
-        cmd.arg("--context").arg(ctx_to_use);
-    }
-    cmd.args([
-        "port-forward",
-        &format!("pod/{}", req.pod),
-        &format!("{}:{}", local_port, req.container_port),
-        "-n",
-        &req.namespace,
-        "--address",
-        "127.0.0.1",
-    ]);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-
-    let mut child = cmd.spawn().map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run kubectl port-forward: {}", e))
-    })?;
-
-    // Wait a moment to ensure it didn't exit with immediate error
-    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("kubectl port-forward failed to start (exit status: {})", status),
-            ));
-        }
-        _ => {}
-    }
-
-    let session = PortForwardSession {
-        id: session_id.clone(),
-        pod: req.pod.clone(),
-        namespace: req.namespace.clone(),
-        container_port: req.container_port,
-        local_port,
-        url: format!("http://localhost:{}", local_port),
-        status: "Active".to_string(),
-        started_at: current_time_str(),
-    };
-
-    let child_shared = Arc::new(std::sync::Mutex::new(Some(child)));
-    let child_clone = child_shared.clone();
-    let pf_map = state.port_forwards.clone();
-    let sid_clone = session_id.clone();
-
-    tokio::task::spawn_blocking(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-            let mut lock = child_clone.lock().unwrap();
-            if let Some(ref mut c) = *lock {
-                if let Ok(Some(_)) = c.try_wait() {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        let map_clone = pf_map.clone();
-        tokio::spawn(async move {
-            let mut map = map_clone.write().await;
-            map.remove(&sid_clone);
-        });
-    });
-
-    {
-        let mut map = state.port_forwards.write().await;
-        map.insert(
-            session_id,
-            ActivePortForward {
-                session: session.clone(),
-                child: child_shared,
-            },
-        );
-    }
-
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "session": session
-    })))
-}
-
-async fn handle_stop_port_forward(
-    State(state): State<AppState>,
-    Json(req): Json<StopPortForwardRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let mut map = state.port_forwards.write().await;
-    if let Some(entry) = map.remove(&req.id) {
-        let mut lock = entry.child.lock().unwrap();
-        if let Some(mut c) = lock.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        Ok(Json(serde_json::json!({ "success": true })))
-    } else {
-        Err((StatusCode::NOT_FOUND, "Port forward session not found".to_string()))
-    }
-}
-
-async fn handle_list_port_forwards(State(state): State<AppState>) -> impl IntoResponse {
-    let map = state.port_forwards.read().await;
-    let list: Vec<PortForwardSession> = map.values().map(|v| v.session.clone()).collect();
-    Json(serde_json::json!({ "sessions": list }))
-}
-
 // ---------------------------------------------------------------------------
 // Metrics (kubectl top). Requires metrics-server; reports `available: false` otherwise.
 // ---------------------------------------------------------------------------
@@ -1159,6 +1003,7 @@ async fn handle_pod_metrics(
     let ctx_to_use = q.context.as_deref().filter(|c| !c.is_empty()).unwrap_or(&current_ctx).to_string();
     let ns = q.namespace.filter(|n| !n.is_empty() && n != "_all");
     let cache_key = format!("metrics:pods:{}:{}", ctx_to_use, ns.as_deref().unwrap_or("_all"));
+    let ctx_for_history = ctx_to_use.clone();
 
     let mut args = vec!["top".to_string(), "pods".to_string(), "--no-headers".to_string()];
     match &ns {
@@ -1193,6 +1038,11 @@ async fn handle_pod_metrics(
                     }))
                 })
                 .collect();
+            // Every reading also feeds the usage history (see usage.rs)
+            usage::record(
+                &ctx_for_history,
+                items.iter().filter_map(|i| Some((i["namespace"].as_str()?, i["name"].as_str()?, i["cpu"].as_str()?, i["memory"].as_str()?))),
+            );
             Json(serde_json::json!({ "available": true, "items": items }))
         }
         Err(e) => Json(serde_json::json!({ "available": false, "error": e.trim() })),
@@ -1691,12 +1541,46 @@ async fn handle_multi_logs(
 
 #[derive(Deserialize)]
 struct ExecQuery {
+    #[serde(default)]
     pod: String,
     namespace: String,
     container: Option<String>,
     context: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    /// Empty: `kubectl exec`. "debug": ephemeral debug container in the pod (for images
+    /// without a shell). "node": a shell on a node through a privileged helper pod.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Debug image (default busybox)
+    #[serde(default)]
+    image: Option<String>,
+    /// debug: container whose processes the debug container can see
+    #[serde(default)]
+    target: Option<String>,
+    /// node: the node to open a shell on
+    #[serde(default)]
+    node: Option<String>,
+}
+
+const DEFAULT_DEBUG_IMAGE: &str = "busybox:1.36";
+
+/// Image references for debug shells: registry/name[:tag][@digest], nothing kubectl could
+/// read as a flag.
+fn valid_image(image: &str) -> bool {
+    !image.is_empty()
+        && image.len() <= 300
+        && !image.starts_with('-')
+        && image.chars().all(|c| c.is_ascii_alphanumeric() || "./:_-@".contains(c))
+}
+
+/// Name of the helper pod `kubectl debug node/...` creates ("Creating debugging pod
+/// node-debugger-aks-x-12345 with container debugger on node aks-x.").
+fn node_debug_pod(output: &str) -> Option<String> {
+    let start = output.find("node-debugger-")?;
+    let name: String = output[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.').collect();
+    let name = name.trim_end_matches('.').to_string();
+    (name.len() > "node-debugger-".len()).then_some(name)
 }
 
 #[derive(Deserialize)]
@@ -1738,11 +1622,47 @@ async fn exec_session(mut socket: WebSocket, q: ExecQuery, ctx: String) {
     if !ctx.is_empty() {
         cmd.args(["--context", &ctx]);
     }
-    cmd.args(["exec", "-it", &q.pod, "-n", &q.namespace]);
-    if let Some(c) = q.container.as_deref().filter(|c| !c.is_empty()) {
-        cmd.args(["-c", c]);
+    let image = q.image.as_deref().map(str::trim).filter(|i| !i.is_empty()).unwrap_or(DEFAULT_DEBUG_IMAGE).to_string();
+    let invalid = |what: &str| format!("\r\nInvalid {what}\r\n");
+    // Namespace of the helper pod a node shell creates (deleted when the session ends)
+    let mut node_debug_ns: Option<String> = None;
+    match q.mode.as_deref().unwrap_or("") {
+        "debug" => {
+            if !valid_k8s_name(&q.pod) || !valid_k8s_name(&q.namespace) || !valid_image(&image) {
+                let _ = socket.send(Message::Text(invalid("pod, namespace or image"))).await;
+                return;
+            }
+            // An ephemeral container stays in the pod spec (stopped) after the session; that is
+            // how Kubernetes works, and the UI says so before starting
+            cmd.args(["debug", "-it", &format!("pod/{}", q.pod), "-n", &q.namespace, &format!("--image={image}"), "--profile=general"]);
+            if let Some(t) = q.target.as_deref().filter(|t| !t.is_empty()) {
+                if !valid_k8s_name(t) {
+                    let _ = socket.send(Message::Text(invalid("target container"))).await;
+                    return;
+                }
+                cmd.arg(format!("--target={t}"));
+            }
+            cmd.args(["--", "sh"]);
+        }
+        "node" => {
+            let node = q.node.clone().unwrap_or_default();
+            let ns = if q.namespace.is_empty() { "default".to_string() } else { q.namespace.clone() };
+            if !valid_k8s_name(&node) || !valid_k8s_name(&ns) || !valid_image(&image) {
+                let _ = socket.send(Message::Text(invalid("node, namespace or image"))).await;
+                return;
+            }
+            cmd.args(["debug", &format!("node/{node}"), "-it", "-n", &ns, &format!("--image={image}"), "--profile=sysadmin", "--", "chroot", "/host", "sh"]);
+            node_debug_ns = Some(ns);
+        }
+        _ => {
+            cmd.args(["exec", "-it", &q.pod, "-n", &q.namespace]);
+            if let Some(c) = q.container.as_deref().filter(|c| !c.is_empty()) {
+                cmd.args(["-c", c]);
+            }
+            cmd.args(["--", "sh", "-c", SHELL_BOOTSTRAP]);
+        }
     }
-    cmd.args(["--", "sh", "-c", SHELL_BOOTSTRAP]);
+    let mut node_debug_pod_name: Option<String> = None;
 
     // Every PTY call can block (ConPTY in particular), so none of them may run on an
     // async worker thread: a stuck worker can stall the whole server.
@@ -1808,6 +1728,9 @@ async fn exec_session(mut socket: WebSocket, q: ExecQuery, ctx: String) {
         tokio::select! {
             out = out_rx.recv() => match out {
                 Some(bytes) => {
+                    if node_debug_ns.is_some() && node_debug_pod_name.is_none() {
+                        node_debug_pod_name = node_debug_pod(&String::from_utf8_lossy(&bytes));
+                    }
                     if socket.send(Message::Binary(bytes)).await.is_err() {
                         break;
                     }
@@ -1855,6 +1778,10 @@ async fn exec_session(mut socket: WebSocket, q: ExecQuery, ctx: String) {
         let _ = killer.kill();
         drop(master);
     });
+    // kubectl leaves the node shell's privileged helper pod behind; remove it
+    if let (Some(ns), Some(pod)) = (node_debug_ns, node_debug_pod_name) {
+        let _ = run_kubectl_cmd(&["delete", "pod", &pod, "-n", &ns, "--wait=false"], &ctx).await;
+    }
 }
 
 #[derive(rust_embed::RustEmbed)]
@@ -1905,17 +1832,27 @@ async fn load_asset(path: &str) -> Option<Bytes> {
     })
 }
 
+/// The app page, carrying this launch's API session cookie (see `security`).
+fn index_response(body: Bytes) -> Response {
+    let mut res = asset_response("index.html", body);
+    res.headers_mut().insert(header::SET_COOKIE, security::session_cookie());
+    res
+}
+
 async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
     let raw_path = uri.path().trim_start_matches('/');
     let path = if raw_path.is_empty() { "index.html" } else { raw_path };
 
     if let Some(bytes) = load_asset(path).await {
+        if path == "index.html" {
+            return index_response(bytes);
+        }
         return asset_response(path, bytes);
     }
 
     // Fallback to index.html for Single-Page Application (SPA) client routes
     if let Some(index) = load_asset("index.html").await {
-        return asset_response("index.html", index);
+        return index_response(index);
     }
 
     (StatusCode::NOT_FOUND, "lensbyacp: UI assets not found").into_response()
@@ -1981,10 +1918,8 @@ async fn main() {
         });
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // Every /api request needs this launch's session token (no cross-origin access)
+    security::init();
 
     let api_router = Router::new()
         .route("/contexts", get(handle_contexts))
@@ -2000,9 +1935,10 @@ async fn main() {
         .route("/k8s/restart", post(handle_restart_resource))
         .route("/k8s/env/set", post(handle_set_env))
         .route("/k8s/logs/stream", get(handle_pod_logs))
-        .route("/port-forward/start", post(handle_start_port_forward))
-        .route("/port-forward/stop", post(handle_stop_port_forward))
-        .route("/port-forward/list", get(handle_list_port_forwards))
+        .route("/port-forward/start", post(portforward::handle_start))
+        .route("/port-forward/stop", post(portforward::handle_stop))
+        .route("/port-forward/list", get(portforward::handle_list))
+        .route("/port-forward/open", post(portforward::handle_open))
         .route("/metrics/pods", get(handle_pod_metrics))
         .route("/metrics/nodes", get(handle_node_metrics))
         .route("/k8s/rollout/undo", post(handle_rollout_undo))
@@ -2022,9 +1958,31 @@ async fn main() {
         .route("/rbac", get(rbac::handle_rbac))
         .route("/timeline", get(timeline::handle_timeline))
         .route("/clusters/health", get(clusters::handle_clusters_health))
+        .route("/watch", get(watch::handle_watch))
+        .route("/metrics/history", get(usage::handle_history))
+        .route("/k8s/review", post(manifests::handle_review))
+        .route("/k8s/explain", get(manifests::handle_explain))
+        .route("/helm/repos", get(helmops::handle_repos).post(helmops::handle_add_repo))
+        .route("/helm/repos/update", post(helmops::handle_update_repos))
+        .route("/helm/search", get(helmops::handle_search))
+        .route("/helm/versions", get(helmops::handle_versions))
+        .route("/helm/chart-values", get(helmops::handle_chart_values))
+        .route("/helm/upgrade", post(helmops::handle_upgrade))
+        .route("/search/clusters", get(search::handle_search))
+        .route("/notify/settings", get(notify::handle_get_settings).post(notify::handle_save_settings))
+        .route("/notify/test", post(notify::handle_test))
+        .route("/notify/send", post(notify::handle_send))
+        .route("/kubeconfig", get(kubeconfig::handle_list))
+        .route("/kubeconfig/rename", post(kubeconfig::handle_rename))
+        .route("/kubeconfig/namespace", post(kubeconfig::handle_namespace))
+        .route("/kubeconfig/delete", post(kubeconfig::handle_delete))
+        .route("/kubeconfig/import", post(kubeconfig::handle_import).layer(DefaultBodyLimit::max(4 * 1024 * 1024)))
+        .route("/kubeconfig/cloud/list", post(kubeconfig::handle_cloud_list))
+        .route("/kubeconfig/cloud/connect", post(kubeconfig::handle_cloud_connect))
         .nest("/ai", ai::router())
         .nest("/update", update::router())
-        .with_state(state);
+        .layer(axum::middleware::from_fn(security::require_session))
+        .with_state(state.clone());
 
     match static_dir_override() {
         Some(dir) => println!("📁 Serving UI from: {:?}", dir),
@@ -2033,8 +1991,7 @@ async fn main() {
 
     let app = Router::new()
         .nest("/api", api_router)
-        .fallback(static_handler)
-        .layer(cors);
+        .fallback(static_handler);
 
     let base_port: u16 = std::env::var("PORT")
         .ok()
@@ -2087,11 +2044,13 @@ async fn main() {
     if is_headless {
         println!("🖥️ Running in headless / server-only mode at {}", url);
         let _ = tokio::signal::ctrl_c().await;
+        portforward::stop_all(&state.port_forwards);
         return;
     }
 
     // Launch native Tauri desktop application window. It opens on the bundled splash
     // screen and is pointed at the local server as soon as the window exists.
+    let forwards = state.port_forwards.clone();
     tauri::Builder::default()
         .setup(move |app_handle| {
             use tauri::Manager;
@@ -2105,6 +2064,30 @@ async fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running lensbyacp Tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building lensbyacp Tauri application")
+        .run(move |_app, event| {
+            // kubectl port-forward processes would otherwise outlive the app
+            if let tauri::RunEvent::Exit = event {
+                portforward::stop_all(&forwards);
+            }
+        });
+}
+
+#[cfg(test)]
+mod debug_shell_tests {
+    use super::*;
+
+    #[test]
+    fn validates_images_and_finds_the_node_helper_pod() {
+        assert!(valid_image("busybox:1.36"));
+        assert!(valid_image("nicolaka/netshoot@sha256:abc123"));
+        assert!(!valid_image("--privileged"));
+        assert!(!valid_image("busybox; rm -rf /"));
+        assert_eq!(
+            node_debug_pod("Creating debugging pod node-debugger-aks-pool-123-x7k2p with container debugger on node aks-pool-123.").as_deref(),
+            Some("node-debugger-aks-pool-123-x7k2p")
+        );
+        assert_eq!(node_debug_pod("If you don't see a command prompt, try pressing enter."), None);
+    }
 }

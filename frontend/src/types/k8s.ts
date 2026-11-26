@@ -36,6 +36,13 @@ export interface PortForwardSession {
   url: string;
   status: string;
   startedAt: string;
+  /** kubeconfig context the forward runs against */
+  context?: string;
+  /** pod | service | deployment | statefulset (`pod` holds the target's name) */
+  kind?: 'pod' | 'service' | 'deployment' | 'statefulset';
+  /** Times kubectl was restarted after the connection dropped */
+  reconnects?: number;
+  lastError?: string;
 }
 
 export interface ContainerPort {

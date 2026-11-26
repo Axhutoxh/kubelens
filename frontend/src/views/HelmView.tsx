@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Package, Loader2, X, RotateCcw, Trash2, AlertTriangle, ExternalLink, Copy } from 'lucide-react';
+import { Package, Loader2, X, RotateCcw, Trash2, AlertTriangle, ExternalLink, Copy, Plus } from 'lucide-react';
+import { HelmInstallDialog } from '../components/HelmInstallDialog';
 import {
   fetchHelmReleases,
   fetchHelmRelease,
@@ -211,6 +212,8 @@ export const HelmView: React.FC<HelmViewProps> = ({ namespace, currentContext, s
     releases: [],
   });
   const [selected, setSelected] = useState<HelmRelease | null>(null);
+  // Install dialog: true for a new release, or the release to upgrade
+  const [installFor, setInstallFor] = useState<HelmRelease | true | null>(null);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setState((s) => ({ ...s, loading: true }));
@@ -241,7 +244,14 @@ export const HelmView: React.FC<HelmViewProps> = ({ namespace, currentContext, s
           <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono text-[11px]">{releases.length}</span>
           {state.loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />}
         </div>
-        <span className="text-[11px]">Click a release for values, manifest, history & rollback</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] hidden lg:inline">Click a release for values, manifest, history & rollback</span>
+          {!state.helmMissing && (
+            <button onClick={() => setInstallFor(true)} className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold">
+              <Plus className="w-3.5 h-3.5" /> Install chart
+            </button>
+          )}
+        </div>
       </div>
 
       {state.error ? (
@@ -273,11 +283,12 @@ export const HelmView: React.FC<HelmViewProps> = ({ namespace, currentContext, s
                 <th className="py-2.5 px-4 font-semibold">Revision</th>
                 <th className="py-2.5 px-4 font-semibold">Status</th>
                 <th className="py-2.5 px-4 font-semibold">Updated</th>
+                <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/50 font-mono text-slate-300">
               {releases.length === 0 ? (
-                <tr><td colSpan={7} className="py-12 text-center text-slate-500 italic font-sans">No Helm releases found.</td></tr>
+                <tr><td colSpan={8} className="py-12 text-center text-slate-500 italic font-sans">No Helm releases found.</td></tr>
               ) : releases.map((r) => (
                 <tr key={`${r.namespace}/${r.name}`} onClick={() => setSelected(r)} className="hover:bg-slate-800/50 cursor-pointer transition-colors group">
                   <td className="py-2.5 px-4 font-semibold text-slate-100 group-hover:text-cyan-300">{r.name}</td>
@@ -287,6 +298,15 @@ export const HelmView: React.FC<HelmViewProps> = ({ namespace, currentContext, s
                   <td className="py-2.5 px-4">{r.revision}</td>
                   <td className="py-2.5 px-4"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${statusClass(r.status)}`}>{r.status}</span></td>
                   <td className="py-2.5 px-4 text-slate-400">{shortDate(r.updated)}</td>
+                  <td className="py-2.5 px-4 text-right">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setInstallFor(r); }}
+                      title="Upgrade: new chart version and / or values, with a diff and dry run"
+                      className="px-2 py-0.5 rounded border border-slate-700 text-[11px] font-sans text-slate-300 hover:text-cyan-300 hover:border-cyan-700"
+                    >
+                      Upgrade
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -300,6 +320,17 @@ export const HelmView: React.FC<HelmViewProps> = ({ namespace, currentContext, s
           context={currentContext}
           onClose={() => setSelected(null)}
           onChanged={() => load(true)}
+          onToast={onToast}
+        />
+      )}
+
+      {installFor && (
+        <HelmInstallDialog
+          release={installFor === true ? undefined : installFor}
+          namespace={namespace}
+          context={currentContext}
+          onClose={() => setInstallFor(null)}
+          onDone={() => load(true)}
           onToast={onToast}
         />
       )}

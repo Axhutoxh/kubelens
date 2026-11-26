@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { execSocketUrl } from '../api/client';
+import { execSocketUrl, ShellMode } from '../api/client';
 
-interface ShellTerminalProps {
+interface ShellTerminalProps extends ShellMode {
   pod: string;
   namespace: string;
   container?: string;
@@ -18,7 +18,7 @@ interface ShellTerminalProps {
 type Status = 'connecting' | 'connected' | 'closed';
 
 /** Interactive `kubectl exec` session rendered with xterm.js over a WebSocket. */
-const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container, context, visible, sessionKey }) => {
+const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container, context, visible, sessionKey, mode, image, target, node }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -47,10 +47,16 @@ const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container
     termRef.current = term;
     fitRef.current = fit;
 
-    term.writeln(`\x1b[36mConnecting to ${namespace}/${pod}${container ? ` (${container})` : ''}…\x1b[0m`);
+    term.writeln(
+      mode === 'node'
+        ? `\x1b[36mStarting a node shell on ${node} (image ${image})…\x1b[0m`
+        : mode === 'debug'
+          ? `\x1b[36mStarting a debug container (${image}) in ${namespace}/${pod}${target ? `, sharing ${target}'s processes` : ''}…\x1b[0m`
+          : `\x1b[36mConnecting to ${namespace}/${pod}${container ? ` (${container})` : ''}…\x1b[0m`
+    );
     setStatus('connecting');
 
-    const ws = new WebSocket(execSocketUrl({ pod, namespace, container, context, cols: term.cols, rows: term.rows }));
+    const ws = new WebSocket(execSocketUrl({ pod, namespace, container, context, cols: term.cols, rows: term.rows, mode, image, target, node }));
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
     const encoder = new TextEncoder();
@@ -127,7 +133,7 @@ const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container
       termRef.current = null;
       wsRef.current = null;
     };
-  }, [pod, namespace, container, context, sessionKey]);
+  }, [pod, namespace, container, context, sessionKey, mode, image, target, node]);
 
   // Re-fit and focus when this tab becomes visible again
   useEffect(() => {
@@ -147,7 +153,13 @@ const ShellTerminal: React.FC<ShellTerminalProps> = ({ pod, namespace, container
             ? 'bg-cyan-950/60 text-cyan-300 border-cyan-900'
             : 'bg-amber-950/60 text-amber-300 border-amber-900'
         }`}>
-          {status === 'connecting' ? 'Opening shell…' : 'Shell session ended. Use the restart button to reconnect.'}
+          {status === 'connecting'
+            ? (mode && mode !== 'exec' ? 'Starting… pulling the debug image can take a moment.' : 'Opening shell…')
+            : mode === 'node'
+              ? 'Node shell ended; its helper pod is being deleted.'
+              : mode === 'debug'
+                ? 'Debug session ended. The stopped debug container stays in the pod spec until the pod is replaced.'
+                : 'Shell session ended. Use the restart button to reconnect. No shell in this image? Try a debug shell from the pod\'s details.'}
         </div>
       )}
       <div ref={hostRef} className="flex-1 min-h-0 p-1.5" />

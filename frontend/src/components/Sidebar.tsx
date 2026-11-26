@@ -28,7 +28,9 @@ import {
   Scale,
   UserCog,
   KeyRound,
-  Users
+  Users,
+  Globe,
+  FileCog
 } from 'lucide-react';
 import { ContextItem } from '../types/k8s';
 
@@ -40,6 +42,8 @@ export const NAV_SECTIONS = [
       { id: 'ai-chat', label: 'AI Chat', icon: Bot },
       { id: 'overview', label: 'Overview', icon: Activity },
       { id: 'clusters', label: 'All Clusters', icon: LayoutGrid },
+      { id: 'cluster-search', label: 'Search All Clusters', icon: Globe },
+      { id: 'kubeconfig', label: 'Kubeconfig', icon: FileCog },
       { id: 'nodes', label: 'Nodes', icon: Cpu },
       { id: 'events', label: 'Events', icon: Radio },
       { id: 'namespaces', label: 'Namespaces', icon: FolderTree },
@@ -261,7 +265,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title="Check for updates"
                 className="bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 px-1.5 py-0.5 rounded text-[10px] font-mono hover:border-cyan-500/70 hover:text-cyan-300 transition-colors cursor-pointer"
               >
-                v1.7.0 Native
+                v1.8.0 Native
               </button>
             </div>
             <div className="text-[10px] text-slate-500 font-medium truncate" title="Author: Ashutosh Chandra">

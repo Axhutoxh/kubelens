@@ -75,6 +75,8 @@ bun run dev
 ```
 Open **[http://localhost:5173](http://localhost:5173)**.
 
+The backend only accepts API requests from its own page (a per-launch session cookie, see [`src/security.rs`](src/security.rs)), so start it with `KUBELLENS_INSECURE_API=1` while developing against the Vite dev server. Never set it for normal use.
+
 ### 3. Build & Distribute Setup Installer
 
 ```powershell
@@ -96,7 +98,7 @@ bun x @tauri-apps/cli@2 build          # Linux needs libwebkit2gtk-4.1-dev first
 
 Push a version tag and the [release workflow](.github/workflows/release.yml) builds every platform and publishes a GitHub Release:
 ```bash
-git tag v1.7.0 && git push origin v1.7.0
+git tag v1.8.0 && git push origin v1.8.0
 ```
 The text at the top of the GitHub Release comes from [`.github/release-notes.md`](.github/release-notes.md); update it before tagging. GitHub's auto-generated change list is appended below it.
 | Platform | Release asset |
@@ -116,6 +118,18 @@ One-time setup: **Repo → Settings → Pages → Source: GitHub Actions**.
 ---
 
 ## ✨ Features Implemented in the Suite
+
+### New in 1.8
+* **Live updates**: Views update as soon as something changes in the cluster (kubectl watches) instead of every 10 seconds; the footer shows **Live** or **Polling**.
+* **Better port forwarding**: Forward to Services and Deployments, reconnect automatically when the pod behind them restarts, save forwards per workspace and restart them with one click. Forwards open in your browser and stop when the app closes.
+* **Debug shells**: A temporary debug container for images without a shell, and a root shell on a node through a helper pod that is removed afterwards. Both ask first.
+* **CPU and memory history**: Per-deployment charts against requests and limits, with right-sizing advice.
+* **Safer YAML editing**: **Review & Apply** validates with the cluster (server-side dry run) and shows a diff per object; Ctrl+Space lists the valid fields at the cursor.
+* **Helm install and upgrade**: Repositories, chart search, versions, a values editor with diff, dry run, install / upgrade.
+* **Search all clusters**: Pods, workloads, Services, Ingresses, ConfigMaps and Secrets by name, or workloads by image, in every context at once.
+* **Alerts to Slack or Teams**: Pod and certificate alerts forwarded to a Slack, Teams or generic webhook.
+* **Kubeconfig management**: Rename, default namespace, delete, import / merge, and AKS / EKS / GKE sign-in; every change backs the file up first.
+* **Locked-down local API**: Only the Kubellens window can call its local API (per-launch session token); other websites and host names are refused.
 
 ### New in 1.7
 * **AI fixes with your approval**: The assistant can propose a restart, scale, rollback, pod delete or image change. You see the cluster, current → new values and the exact kubectl command; nothing runs until you click **Apply**. MCP stays read-only.

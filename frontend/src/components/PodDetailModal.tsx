@@ -31,7 +31,8 @@ import {
   Key,
   Info,
   ArrowLeft,
-  Maximize2
+  Maximize2,
+  Bug
 } from 'lucide-react';
 import { 
   PodItem, 
@@ -40,7 +41,8 @@ import {
   ContainerEnvVar
 } from '../types/k8s';
 import { 
-  startPortForward, 
+  startPortForward,
+  openPortForward,
   stopPortForward, 
   fetchPortForwards, 
   fetchResourceDetail, 
@@ -95,6 +97,8 @@ interface PodDetailModalProps {
   onOpenManifest: (kind: string, name: string, namespace: string) => void;
   onRefreshList?: () => void;
   onToast: (message: string, type?: 'success' | 'error') => void;
+  /** Ephemeral debug container shell (asks for confirmation first) */
+  onOpenDebugShell?: (pod: string, namespace: string, containers: string[]) => void;
   isInline?: boolean;
   onExpandFullscreen?: (
     pod: PodItem, 
@@ -113,6 +117,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
   onOpenManifest,
   onRefreshList,
   onToast,
+  onOpenDebugShell,
   isInline = false,
   onExpandFullscreen,
 }) => {
@@ -140,6 +145,10 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
   const [isLoadingForwards, setIsLoadingForwards] = useState(false);
   const [containerPortInput, setContainerPortInput] = useState<string>('');
   const [localPortInput, setLocalPortInput] = useState<string>('');
+  // Open the forwarded URL in the browser as soon as kubectl is forwarding (remembered)
+  const [openWhenReady, setOpenWhenReady] = useState<boolean>(() => {
+    try { return localStorage.getItem('kubellens_pf_open_when_ready') !== 'false'; } catch { return true; }
+  });
   const [isStartingForward, setIsStartingForward] = useState(false);
   const [forwardError, setForwardError] = useState<string | null>(null);
 
@@ -742,12 +751,13 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
     setPod(initialPod);
 
     // Default container port input if ports exist
+    // Local port stays empty: the backend uses the same port when free, else any free one
     if (exposedPorts.length > 0) {
       setContainerPortInput(exposedPorts[0].port.toString());
-      setLocalPortInput(exposedPorts[0].port.toString());
+      setLocalPortInput('');
     } else {
       setContainerPortInput('8080');
-      setLocalPortInput('8080');
+      setLocalPortInput('');
     }
 
     loadFreshPodData();
@@ -795,7 +805,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
     try {
       const data = await fetchPortForwards();
       const relevant = (data.sessions || []).filter(
-        (s: PortForwardSession) => s.pod === podName && s.namespace === podNamespace
+        (s: PortForwardSession) => (s.kind || 'pod') === 'pod' && s.pod === podName && s.namespace === podNamespace
       );
       setActiveForwards(relevant);
     } catch {
@@ -812,12 +822,28 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
     setTimeout(() => setCopiedText(null), 2000);
   };
 
+  const openForward = async (pf: PortForwardSession) => {
+    try {
+      await openPortForward(pf);
+    } catch (err: any) {
+      // Still useful: the user can paste it
+      navigator.clipboard?.writeText(pf.url);
+      onToast(`${err.message || 'Could not open the browser'}; URL copied`, 'error');
+    }
+  };
+
   const handleStartForward = async (cPortStr?: string, lPortStr?: string) => {
     const cp = parseInt(cPortStr || containerPortInput, 10);
-    const lp = parseInt(lPortStr || localPortInput || containerPortInput, 10);
+    // Empty local port: the backend uses the container port when free, else any free port
+    const lpRaw = (lPortStr ?? localPortInput).trim();
+    const lp = lpRaw ? parseInt(lpRaw, 10) : NaN;
 
     if (isNaN(cp) || cp <= 0 || cp > 65535) {
       setForwardError('Please specify a valid container port (1-65535)');
+      return;
+    }
+    if (lpRaw && (isNaN(lp) || lp <= 0 || lp > 65535)) {
+      setForwardError('The local port must be between 1 and 65535, or empty to pick a free one');
       return;
     }
 
@@ -827,9 +853,10 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
     try {
       const res = await startPortForward(podName, podNamespace, cp, isNaN(lp) ? undefined : lp, context);
       if (res.success) {
-        onToast(`⚡ Port forward active: http://localhost:${res.session.localPort}`);
+        onToast(`⚡ Forwarding ${res.session.url} → ${podName}:${cp}`);
         await loadPortForwards();
         setActiveTab('portforward');
+        if (openWhenReady) await openForward(res.session);
       }
     } catch (err: any) {
       setForwardError(err.message || 'Failed to start port forward');
@@ -1151,6 +1178,21 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
               <FileCode className="w-3.5 h-3.5 text-amber-400" />
               <span>Manifest</span>
             </button>
+
+            {/* Debug shell (ephemeral container) for images without a shell */}
+            {onOpenDebugShell && pod.status.phase === 'Running' && (
+              <button
+                onClick={() => {
+                  onOpenDebugShell(podName, podNamespace, containerNames);
+                  onClose();
+                }}
+                title="Ephemeral debug container: a shell even when the image has none"
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 flex items-center gap-1.5 transition-colors"
+              >
+                <Bug className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Debug shell</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1990,7 +2032,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                                 <button
                                   onClick={() => {
                                     setContainerPortInput(p.containerPort.toString());
-                                    setLocalPortInput(p.containerPort.toString());
+                                    setLocalPortInput('');
                                     setActiveTab('portforward');
                                   }}
                                   className="px-2 py-1 rounded bg-cyan-950 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/80 text-[11px] font-sans font-medium flex items-center gap-1 transition-colors"
@@ -2117,15 +2159,15 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                           <div>
                             <div className="flex items-center gap-2">
-                              <a
-                                href={pf.url}
-                                target="_blank"
-                                rel="noreferrer"
+                              <button
+                                type="button"
+                                onClick={() => openForward(pf)}
+                                title="Open in your browser"
                                 className="text-sm font-bold text-cyan-300 hover:underline font-mono flex items-center gap-1"
                               >
                                 {pf.url}
                                 <ExternalLink className="w-3 h-3" />
-                              </a>
+                              </button>
                               <button
                                 onClick={() => copyToClipboard(pf.url, 'Port Forward URL')}
                                 className="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800"
@@ -2141,15 +2183,15 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <a
-                            href={pf.url}
-                            target="_blank"
-                            rel="noreferrer"
+                          <button
+                            type="button"
+                            onClick={() => openForward(pf)}
+                            title="Open in your browser"
                             className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/50 text-xs font-semibold flex items-center gap-1.5 transition-colors"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
-                            <span>Open</span>
-                          </a>
+                            <span>Open in browser</span>
+                          </button>
 
                           <button
                             onClick={() => handleStopForward(pf.id)}
@@ -2183,7 +2225,7 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                           type="button"
                           onClick={() => {
                             setContainerPortInput(p.port.toString());
-                            setLocalPortInput(p.port.toString());
+                            setLocalPortInput('');
                           }}
                           className={`px-2.5 py-1 rounded-lg text-xs font-mono border transition-all ${
                             containerPortInput === p.port.toString()
@@ -2219,14 +2261,27 @@ export const PodDetailModal: React.FC<PodDetailModalProps> = ({
                     </label>
                     <input
                       type="number"
-                      placeholder="e.g. 8080 (Leave empty for auto)"
+                      placeholder="Empty: same port if free, else any free port"
                       value={localPortInput}
                       onChange={(e) => setLocalPortInput(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700/80 text-slate-100 font-mono text-sm focus:outline-none focus:border-cyan-500"
                     />
-                    <span className="text-[11px] text-slate-500 mt-1 block">Local port will be http://localhost:&lt;port&gt;</span>
+                    <span className="text-[11px] text-slate-500 mt-1 block">Opens as http://localhost:&lt;port&gt;</span>
                   </div>
                 </div>
+
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none w-fit">
+                  <input
+                    type="checkbox"
+                    checked={openWhenReady}
+                    onChange={(e) => {
+                      setOpenWhenReady(e.target.checked);
+                      try { localStorage.setItem('kubellens_pf_open_when_ready', String(e.target.checked)); } catch { /* storage unavailable */ }
+                    }}
+                    className="accent-cyan-500 w-3.5 h-3.5"
+                  />
+                  Open in a browser tab when the forward is ready
+                </label>
 
                 {forwardError && (
                   <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800/80 text-rose-300 text-xs flex items-center gap-2">
